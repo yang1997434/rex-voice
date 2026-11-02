@@ -247,3 +247,27 @@ func TestSlowPeerOnlyClosesPeer(t *testing.T) {
 		t.Fatalf("phone2 got type=%d %q", f.typ, f.data)
 	}
 }
+
+// A client ping after the relay's last write must not kill the connection: the pong is written
+// from inside Receive, outside send's deadline.
+func TestPingAfterQuietSpell(t *testing.T) {
+	h, s := newRelay(t)
+	h.writeTimeout = 50 * time.Millisecond
+	mac := dial(t, s, "mac", testID)
+	expectPeer(t, mac, false)
+	phone := dial(t, s, "phone", testID)
+	expectPeer(t, phone, true)
+	expectPeer(t, mac, true)
+	time.Sleep(120 * time.Millisecond) // let the deadline from the last peer notice expire
+	w, err := mac.NewFrameWriter(websocket.PingFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("hi")); err != nil { // Write sends the frame; Close is a no-op
+		t.Fatal(err)
+	}
+	// The pong's flush error is swallowed by x/net/websocket but sticks in its bufio.Writer,
+	// so the symptom is the next relay write to mac failing.
+	sendBin(t, phone, []byte{4, 5, 6})
+	expectBinary(t, mac, []byte{4, 5, 6})
+}

@@ -248,6 +248,8 @@ func (s *Session) send(ev map[string]any) error {
 	if err := s.ws.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return err
 	}
+	// Clear it afterwards: the read loop writes pongs from inside Receive and would hit a stale deadline.
+	defer s.ws.SetWriteDeadline(time.Time{})
 	return websocket.Message.Send(s.ws, string(b))
 }
 

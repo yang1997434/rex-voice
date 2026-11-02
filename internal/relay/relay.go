@@ -142,7 +142,9 @@ func (h *Hub) notify(c *conn) {
 // send writes one frame ([]byte → binary, string → text); on failure it kills c only.
 func (h *Hub) send(c *conn, v any) {
 	c.ws.SetWriteDeadline(time.Now().Add(h.writeTimeout))
-	if err := websocket.Message.Send(c.ws, v); err != nil {
+	err := websocket.Message.Send(c.ws, v)
+	c.ws.SetWriteDeadline(time.Time{}) // pongs are written from inside Receive and would hit a stale deadline
+	if err != nil {
 		log.Printf("write fail role=%s id=%s err=%v", c.role, c.id[:6], err)
 		kill(c.ws)
 	}

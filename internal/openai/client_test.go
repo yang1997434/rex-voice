@@ -328,3 +328,32 @@ func TestUsage(t *testing.T) {
 		t.Errorf("usage line = %+v", l)
 	}
 }
+
+// x/net/websocket answers a server ping from inside Receive, so a write deadline left over from the
+// last send must not outlive that send; otherwise the first ping after a quiet spell kills the session.
+func TestPingAfterQuietSpell(t *testing.T) {
+	old := writeTimeout
+	writeTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { writeTimeout = old })
+	f := newFake(t, true)
+	errs := make(chan error, 1)
+	s := f.dial(t, Config{Handlers: Handlers{Error: func(e error) { errs <- e }}})
+	if err := s.AppendAudio([]byte{0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	f.next(t)
+	time.Sleep(150 * time.Millisecond) // past the deadline of that send
+	f.ws.PayloadType = websocket.PingFrame
+	if _, err := f.ws.Write([]byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	f.ws.PayloadType = websocket.TextFrame
+	f.push(t, `{"type":"input_audio_buffer.speech_started"}`)
+	select {
+	case err := <-errs:
+		t.Fatalf("session died on a ping: %v", err)
+	case <-s.Done():
+		t.Fatal("session closed on a ping")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
