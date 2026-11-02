@@ -3,6 +3,8 @@
 package relay
 
 import (
+	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"regexp"
@@ -14,7 +16,10 @@ import (
 
 const MaxFrameBytes = 64 << 10
 
-var idRe = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
+var (
+	idRe    = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
+	tokenRe = regexp.MustCompile(`^[0-9A-Fa-f]{32,200}$`) // goes into the APNs URL path
+)
 
 type conn struct {
 	ws       *websocket.Conn
@@ -25,11 +30,16 @@ type conn struct {
 // Hub holds at most one connection per (id, role).
 type Hub struct {
 	mu           sync.Mutex
-	conns        map[string]*conn // key: id + "|" + role
+	conns        map[string]*conn  // key: id + "|" + role
+	tokens       map[string]string // id → phone's APNs device token; memory only, the phone resends on connect
 	writeTimeout time.Duration
+
+	Notifier Notifier // nil = notify frames are dropped; set before serving
 }
 
-func NewHub() *Hub { return &Hub{conns: map[string]*conn{}, writeTimeout: 10 * time.Second} }
+func NewHub() *Hub {
+	return &Hub{conns: map[string]*conn{}, tokens: map[string]string{}, writeTimeout: 10 * time.Second}
+}
 
 func key(id, role string) string { return id + "|" + role }
 
@@ -112,19 +122,61 @@ var frameCodec = websocket.Codec{
 	},
 }
 
-// pump reads frames from c until error, forwarding binary frames to the current peer.
+// pump reads frames from c until error, forwarding binary frames to the current peer
+// and handling the relay's own text frames (push_token, notify).
 func (h *Hub) pump(c *conn) string {
 	for {
 		var f frame
 		if err := frameCodec.Receive(c.ws, &f); err != nil {
 			return err.Error()
 		}
+		if f.typ == websocket.TextFrame {
+			h.control(c, f.data)
+			continue
+		}
 		if f.typ != websocket.BinaryFrame {
-			continue // text from clients is ignored
+			continue
 		}
 		if p := h.peerOf(c); p != nil {
 			h.send(p, f.data)
 		}
+	}
+}
+
+// control handles a client text frame: phone sends push_token, mac sends notify; anything else is ignored.
+func (h *Hub) control(c *conn, data []byte) {
+	var m struct{ T, Token, Title, Body string }
+	if err := json.Unmarshal(data, &m); err != nil {
+		log.Printf("bad text frame role=%s id=%s err=%v", c.role, c.id[:6], err)
+		return
+	}
+	switch {
+	case m.T == "push_token" && c.role == "phone":
+		if !tokenRe.MatchString(m.Token) {
+			log.Printf("bad push token id=%s", c.id[:6])
+			return
+		}
+		h.mu.Lock()
+		h.tokens[c.id] = m.Token
+		h.mu.Unlock()
+		log.Printf("push token id=%s", c.id[:6])
+	case m.T == "notify" && c.role == "mac":
+		h.mu.Lock()
+		tok := h.tokens[c.id]
+		h.mu.Unlock()
+		if h.Notifier == nil || tok == "" {
+			log.Printf("notify dropped id=%s notifier=%t token=%t", c.id[:6], h.Notifier != nil, tok != "")
+			return
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := h.Notifier.Push(ctx, tok, m.Title, m.Body); err != nil {
+				log.Printf("push fail id=%s err=%v", c.id[:6], err)
+				return
+			}
+			log.Printf("push ok id=%s", c.id[:6])
+		}()
 	}
 }
 

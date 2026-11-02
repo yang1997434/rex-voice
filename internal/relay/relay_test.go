@@ -3,9 +3,21 @@ package relay
 import (
 	"bufio"
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -270,4 +282,232 @@ func TestPingAfterQuietSpell(t *testing.T) {
 	// so the symptom is the next relay write to mac failing.
 	sendBin(t, phone, []byte{4, 5, 6})
 	expectBinary(t, mac, []byte{4, 5, 6})
+}
+
+const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// writeP8 writes a fresh P-256 key as a PEM PKCS#8 file, the format Apple's .p8 uses.
+func writeP8(t *testing.T) (string, *ecdsa.PrivateKey) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "AuthKey.p8")
+	if err := os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p, k
+}
+
+type apnsHit struct {
+	path   string
+	header http.Header
+	body   []byte
+}
+
+// fakeAPNs records every request and answers with status and body.
+func fakeAPNs(t *testing.T, status int, body string) (*httptest.Server, chan apnsHit) {
+	t.Helper()
+	hits := make(chan apnsHit, 8)
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		hits <- apnsHit{r.URL.Path, r.Header.Clone(), b}
+		w.WriteHeader(status)
+		io.WriteString(w, body)
+	}))
+	t.Cleanup(s.Close)
+	return s, hits
+}
+
+func newTestAPNS(t *testing.T, url string) *APNS {
+	t.Helper()
+	keyPath, _ := writeP8(t)
+	n, err := NewAPNS(keyPath, "KEY123", "KAA6GJ59XS", url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func sendText(t *testing.T, ws *websocket.Conn, s string) {
+	t.Helper()
+	if err := websocket.Message.Send(ws, s); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+}
+
+// syncPump proves every frame `from` sent before it has been handled by the relay's pump.
+func syncPump(t *testing.T, from, to *websocket.Conn) {
+	t.Helper()
+	sendBin(t, from, []byte{9})
+	expectBinary(t, to, []byte{9})
+}
+
+func tokenOf(h *Hub, id string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.tokens[id]
+}
+
+func TestPushTokenStored(t *testing.T) {
+	h, s := newRelay(t)
+	mac, phone := pair(t, s)
+	sendText(t, phone, `{"t":"push_token","token":"not-hex"}`)
+	sendText(t, phone, `{bad json`)
+	syncPump(t, phone, mac)
+	if got := tokenOf(h, testID); got != "" {
+		t.Fatalf("bad token stored: %q", got)
+	}
+	sendText(t, mac, `{"t":"push_token","token":"`+testToken+`"}`) // only the phone may register
+	syncPump(t, mac, phone)
+	if got := tokenOf(h, testID); got != "" {
+		t.Fatalf("mac token stored: %q", got)
+	}
+	sendText(t, phone, `{"t":"push_token","token":"`+testToken+`"}`)
+	syncPump(t, phone, mac)
+	if got := tokenOf(h, testID); got != testToken {
+		t.Fatalf("token = %q", got)
+	}
+	phone.Close()
+	expectPeer(t, mac, false)
+	if got := tokenOf(h, testID); got != testToken {
+		t.Fatalf("token lost after phone left: %q", got)
+	}
+}
+
+func TestNotifyPushesToAPNs(t *testing.T) {
+	h, s := newRelay(t)
+	fake, hits := fakeAPNs(t, 200, "")
+	h.Notifier = newTestAPNS(t, fake.URL)
+	mac, phone := pair(t, s)
+	sendText(t, phone, `{"t":"push_token","token":"`+testToken+`"}`)
+	syncPump(t, phone, mac)
+	sendText(t, mac, `{"t":"notify","title":"Claude 卡住了","body":"窗格 2 在等你"}`)
+
+	var hit apnsHit
+	select {
+	case hit = <-hits:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no APNs request")
+	}
+	if hit.path != "/3/device/"+testToken {
+		t.Fatalf("path = %q", hit.path)
+	}
+	for k, want := range map[string]string{"apns-topic": "com.maruiao.rexvoice", "apns-push-type": "alert", "apns-priority": "10"} {
+		if got := hit.header.Get(k); got != want {
+			t.Fatalf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if a := hit.header.Get("authorization"); !strings.HasPrefix(a, "bearer ") || strings.Count(a, ".") != 2 {
+		t.Fatalf("authorization = %q", a)
+	}
+	var body struct {
+		Aps struct {
+			Alert struct{ Title, Body string }
+			Sound string
+		}
+	}
+	if err := json.Unmarshal(hit.body, &body); err != nil {
+		t.Fatalf("body %s: %v", hit.body, err)
+	}
+	if body.Aps.Alert.Title != "Claude 卡住了" || body.Aps.Alert.Body != "窗格 2 在等你" || body.Aps.Sound != "default" {
+		t.Fatalf("body = %s", hit.body)
+	}
+}
+
+func TestNotifyWithoutTokenSkips(t *testing.T) {
+	h, s := newRelay(t)
+	fake, hits := fakeAPNs(t, 200, "")
+	h.Notifier = newTestAPNS(t, fake.URL)
+	mac, phone := pair(t, s)
+	sendText(t, mac, `{"t":"notify","title":"x","body":"y"}`) // no token yet
+	syncPump(t, mac, phone)
+	sendText(t, phone, `{"t":"push_token","token":"`+testToken+`"}`)
+	sendText(t, phone, `{"t":"notify","title":"x","body":"y"}`) // phone may not notify
+	syncPump(t, phone, mac)
+	select {
+	case hit := <-hits:
+		t.Fatalf("unexpected APNs request %s", hit.path)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestNotifyWithoutNotifierSkips(t *testing.T) {
+	h, s := newRelay(t) // Notifier nil: token kept, notify dropped, connection survives
+	mac, phone := pair(t, s)
+	sendText(t, phone, `{"t":"push_token","token":"`+testToken+`"}`)
+	syncPump(t, phone, mac)
+	sendText(t, mac, `{"t":"notify","title":"x","body":"y"}`)
+	syncPump(t, mac, phone)
+	if tokenOf(h, testID) != testToken {
+		t.Fatal("token not stored")
+	}
+}
+
+func TestAPNsErrorCarriesReason(t *testing.T) {
+	fake, _ := fakeAPNs(t, 400, `{"reason":"BadDeviceToken"}`)
+	err := newTestAPNS(t, fake.URL).Push(t.Context(), testToken, "t", "b")
+	if err == nil || !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "BadDeviceToken") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAPNsJWT(t *testing.T) {
+	keyPath, k := writeP8(t)
+	n, err := NewAPNS(keyPath, "KEY123", "KAA6GJ59XS", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	n.now = func() time.Time { return now }
+	tok, err := n.token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("jwt has %d parts", len(parts))
+	}
+	dec := func(s string) []byte {
+		b, err := base64.RawURLEncoding.DecodeString(s)
+		if err != nil {
+			t.Fatalf("decode %q: %v", s, err)
+		}
+		return b
+	}
+	var hdr struct{ Alg, Kid string }
+	var claims struct {
+		Iss string
+		Iat int64
+	}
+	json.Unmarshal(dec(parts[0]), &hdr)
+	json.Unmarshal(dec(parts[1]), &claims)
+	if hdr.Alg != "ES256" || hdr.Kid != "KEY123" || claims.Iss != "KAA6GJ59XS" || claims.Iat != now.Unix() {
+		t.Fatalf("hdr=%+v claims=%+v", hdr, claims)
+	}
+	sig := dec(parts[2])
+	sum := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if len(sig) != 64 || !ecdsa.Verify(&k.PublicKey, sum[:], new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])) {
+		t.Fatal("signature does not verify")
+	}
+
+	now = now.Add(49 * time.Minute)
+	if again, _ := n.token(); again != tok {
+		t.Fatal("jwt re-signed before 50 min")
+	}
+	now = now.Add(2 * time.Minute)
+	if again, _ := n.token(); again == tok {
+		t.Fatal("jwt not refreshed after 50 min")
+	}
+
+	bad := filepath.Join(t.TempDir(), "bad.p8")
+	os.WriteFile(bad, []byte("not a key"), 0o600)
+	if _, err := NewAPNS(bad, "K", "T", ""); err == nil {
+		t.Fatal("bad key accepted")
+	}
 }
