@@ -82,6 +82,9 @@ struct ContentView: View {
                     sideRail(room)
                         .padding(.bottom, 8)
                         .frame(width: geo.safeAreaInsets.trailing)
+                        // The status icons sit ~6pt left of the inset's center (measured on the Duo outer screen:
+                        // Wi-Fi at x≈418, inset center 424); shift so the logo lines up under them. Inner screen unverified.
+                        .offset(x: -6)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                         .ignoresSafeArea(.container, edges: [.top, .trailing])
                 }
