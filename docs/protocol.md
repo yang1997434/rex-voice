@@ -25,7 +25,7 @@
 - `type 3` 保活：明文、无载荷，见第 2 节。
 - `type 0` 音频：PCM16 LE 单声道 24 kHz，每帧 20 ms（960 字节明文）。手机→Mac 是麦克风，Mac→手机 是模型输出。
 - `type 1` 控制：JSON。
-  - 手机→Mac：`{"t":"hello","app":"<版本>","device":"<机型>","device_id":"<app 首次启动生成的随机 UUID，存 Keychain>"}`（每次连上、盐交换完先发）、`{"t":"call.start","provider":"openai|qwen|doubao","model":"…","voice":"…","api_key":"…"}`（四个字段都可选，2026-11-01 用户定「手机管 key、选双工模型」：手机把设置页里的供应商 / 模型 / 音色 / 该家的 key 随 `call.start` 发来，Mac 只放内存、本次通话用完即丢，不落盘、不进任何日志和审计；没带的字段用 Mac `config.json` 的默认，`api_key` 没带时才用 Mac 钥匙串里的兜底 key；不认识的 `provider` 回 `error` 并保持 `ended`）、`{"t":"call.end"}`。一次性配对靠 `device_id`：Mac 第一次收到能解密的 hello 时把它记进 `pair.json`，之后 `device_id` 不同的 hello 一律回 `error` 并断开，要换手机重新 `pair`。
+  - 手机→Mac：`{"t":"hello","app":"<版本>","device":"<机型>","device_id":"<app 首次启动生成的随机 UUID，存 Keychain>"}`（每次连上、盐交换完先发）、`{"t":"call.start","provider":"openai|qwen|gemini|grok","model":"…","voice":"…","api_key":"…"}`（四个字段都可选，2026-11-01 用户定「手机管 key、选双工模型」：手机把设置页里的供应商 / 模型 / 音色 / 该家的 key 随 `call.start` 发来，Mac 只放内存、本次通话用完即丢，不落盘、不进任何日志和审计；没带的字段用 Mac `config.json` 的默认，`api_key` 没带时才用 Mac 钥匙串里的兜底 key；不认识的 `provider` 回 `error` 并保持 `ended`）、`{"t":"call.end"}`。一次性配对靠 `device_id`：Mac 第一次收到能解密的 hello 时把它记进 `pair.json`，之后 `device_id` 不同的 hello 一律回 `error` 并断开，要换手机重新 `pair`。
   - Mac→手机：`{"t":"status","state":"connecting|listening|thinking|speaking|ended"}`（`detail` 可选，Mac 目前不发，手机按可选解）、`{"t":"transcript","who":"user|assistant","text":"…"}`、`{"t":"interrupt"}`（立即停播、清空播放队列）、`{"t":"hang_up","reason":"user|idle|error"}`、`{"t":"error","msg":"…"}`
 
 ### 测试向量
@@ -64,16 +64,6 @@ Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.
 - 会话上限 120 分钟；`SetMuted` 空操作。
 - 用量：`response.done.usage` 的 `input_tokens`、`output_tokens`、`input_tokens_details.{text_tokens,audio_tokens}`、`output_tokens_details.{text_tokens,audio_tokens}`（注意是 `tokens_details`），按 `internal/voice/qwen/prices.go` 北京价（元/百万 token：文本入 1.5、音频入 6、文本出 4.5、音频出 12，出处 https://help.aliyun.com/zh/model-studio/model-pricing ，按 7.2 折美元）写同格式 usage.log 行，`cached` 恒 0。
 
-### 4.3 字节豆包 Realtime 3.0（Seeduplex，WebSocket）
-
-- `wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue`（`Extra["url"]` 可覆盖），头 `X-Api-Key: <key>`、`User-Agent: rex-voiced/<version>`。连上发 `session.create {session:{model（默认 "1.2.6.1"）, instructions, tools（扁平，同 OpenAI）, audio:{input:{format:{type:"pcm", rate:16000}}, output:{format:{type:"pcm_s16le", rate:24000}, voice（默认 zh_female_vv_uranus_bigtts）}}}, extension:{asr:{}, tts:{}, dialog:{}}}`，等 `session.created`（记 `session.id`）才算接通，10 秒超时；回 `error` 即失败。实现在 `internal/voice/doubao`。输出格式必须写 `pcm_s16le`（`pcm` 是 float32，不写是 ogg_opus）。
-- 上行：24k 经 `voice.Downsampler` 转 16k，每帧一条 `input_audio_buffer.append {audio: base64}`，跟着会话层的 20 ms 节奏直接发（服务端要求实时节奏）。`SetMuted(true/false)` 在状态变化时发 `input_audio_mute.commit` / `input_audio_unmute.commit`；静音期间会话层补的静音帧不发。
-- 下行：`response.output_audio.delta`（base64 PCM16 24k）→ 播放；`response.output_text.delta/.done {text}` → 回答文字；`conversation.item.input_audio_transcription.completed {text}` → 用户文字。
-- 打断：`conversation.item.input_audio_transcription.started` 当「用户开口」；这时还在出声就发 `response.cancel`，并丢掉迟到的音频，直到下一条 `response.output_audio.started`。服务端通常自己先结束（发一个空的 `response.done`），这种情况不再发 cancel；cancel 之后回来的那条 `error` 只记日志。
-- 工具：`response.function_call_arguments.done {items:[{call_id, name, arguments}]}` → 并行执行（每个 20 秒超时）→ **一条** `conversation.item.create {items:[{call_id, role:"tool", content:[{type:"input_text", text}]}]}` 全部送回，模型自己接着答，不发 `response.create`。
-- 结束一轮：`response.done` 里没有工具批次在跑 → `TurnDone`。用量取 `response.usage`（`input_tokens` / `output_tokens`；音频和文本的拆分字段 `input_token_details` / `output_token_details` 未核实，没有拆分就记 `unpriced:true`）；单价在 `prices.go`（元/百万 token，按 7.2 折美元，是否覆盖 3.0 未核实），usage 行的 `model` 写 `doubao/<model>`。
-- 关闭：发 `session.close`，等 `session.closed`（最多 3 秒）再断开；关闭过程中收到的 `error` 只记日志。其余 `error` 报给会话层并结束会话。`MaxAge` = 0（闲置 10 分钟服务端会断，交给会话层的空闲挂断）。
-- 不支持文字输入：`SendText` 返回 `doubao.ErrNoTextInput`（单独的 user 文本条目服务端不回应），所以 `rex-voiced chat` 和 60 秒空闲提示在豆包上不可用。
 
 ## 5. 工具（移植自 `~/data/claude/voice-probe/tools.mjs`，已在实验里验证）
 

@@ -323,7 +323,7 @@ func (s *server) onTick(now time.Time) {
 	case idle >= idlePrompt && !c.prompted && c.sess != nil:
 		c.prompted = true
 		if err := c.sess.SendText(idleText); err != nil {
-			// providers without text input (doubao): the phone shows the question instead of the model asking it
+			// providers without text input: the phone shows the question instead of the model asking it
 			s.log.Warn("idle prompt failed", "err", err)
 			s.sendCtl(map[string]any{"t": "transcript", "who": "assistant", "text": "还在吗？再没声音就先挂了。"})
 		}

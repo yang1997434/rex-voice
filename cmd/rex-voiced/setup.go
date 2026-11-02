@@ -21,7 +21,7 @@ import (
 func setup(args []string) int {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	dirFlag := configDirFlag(fs)
-	provider := fs.String("provider", config.DefaultProvider, "whose API key to store: openai | qwen | doubao")
+	provider := fs.String("provider", config.DefaultProvider, "whose API key to store: openai | qwen | gemini | grok")
 	fs.Parse(args)
 	keyEnv := config.KeyEnv(*provider)
 	if keyEnv == "" {

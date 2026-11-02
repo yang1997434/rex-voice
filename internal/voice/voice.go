@@ -21,7 +21,8 @@ type Provider string
 const (
 	OpenAI Provider = "openai"
 	Qwen   Provider = "qwen"
-	Doubao Provider = "doubao"
+	Gemini Provider = "gemini"
+	Grok   Provider = "grok"
 )
 
 type Config struct {
@@ -35,7 +36,7 @@ type Config struct {
 	Handlers                        Handlers
 	UsageLog                        io.Writer // one JSON line per response
 	Version                         string    // User-Agent rex-voiced/<Version>, default "dev"
-	// Extra is provider specific: openai "keep_tool_outputs", "url"; qwen "region", "workspace"; doubao "app_id".
+	// Extra is provider specific: openai "keep_tool_outputs", "url"; qwen "region", "workspace".
 	Extra map[string]string
 }
 
@@ -76,7 +77,8 @@ var ErrUnknownProvider = errors.New("voice: unknown provider")
 var defaults = map[Provider][2]string{
 	OpenAI: {"gpt-realtime-2.1", "marin"},
 	Qwen:   {"qwen3.8-omni-flash-realtime", "Tina"},
-	Doubao: {"1.2.6.1", "zh_female_vv_uranus_bigtts"},
+	Gemini: {"gemini-3.8-live", "Kore"},
+	Grok:   {"grok-voice-3.0", "Ara"},
 }
 
 // Defaults is the provider's default model and voice; both empty for an unknown provider.
