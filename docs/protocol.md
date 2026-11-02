@@ -64,6 +64,16 @@ Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.
 - 会话上限 120 分钟；`SetMuted` 空操作。
 - 用量：`response.done.usage` 的 `input_tokens`、`output_tokens`、`input_tokens_details.{text_tokens,audio_tokens}`、`output_tokens_details.{text_tokens,audio_tokens}`（注意是 `tokens_details`），按 `internal/voice/qwen/prices.go` 北京价（元/百万 token：文本入 1.5、音频入 6、文本出 4.5、音频出 12，出处 https://help.aliyun.com/zh/model-studio/model-pricing ，按 7.2 折美元）写同格式 usage.log 行，`cached` 恒 0。
 
+### 4.3 Google Gemini Live API（WebSocket）
+
+- 端点 `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=<key>`（`Extra.url` 整体覆盖，照样追加 `?key=`）；key 在 URL 里，日志和错误文案只写不带 `key=` 的地址。头 `User-Agent: rex-voiced/<version>`。服务端消息是二进制帧 JSON；出错一律是关闭帧（1007 / 1008 + 原因），Mac 读出原因报 `Handlers.Error` 并结束会话。实现在 `internal/voice/gemini`。
+- 第一条发 `setup`：`model: "models/<model>"`、`generationConfig {responseModalities:["AUDIO"], speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName}`（默认 `Kore`；`responseModalities` 放 setup 顶层会被 1007 拒，11-01 实测）、`systemInstruction.parts[0].text`、`tools[0].functionDeclarations[] {name, description, behavior:"BLOCKING", parametersJsonSchema}`（**不能用 `parameters`**：它不认 `additionalProperties`，1007）、`realtimeInputConfig.automaticActivityDetection.silenceDurationMs: 700`、`outputAudioTranscription:{}`、开转写时 `inputAudioTranscription:{}`、`sessionResumption:{handle?}`、`contextWindowCompression.slidingWindow:{}`；等 `setupComplete`（10 秒）。文字模式发 `responseModalities:["TEXT"]`，`gemini-3.8-live` 在第一轮回 1007「response modalities (TEXT) is not supported」，所以 `rex-voiced chat` 用不了 gemini。
+- 上行：24k 经 `voice.Downsampler` 转 16k，`realtimeInput.audio {data, mimeType:"audio/pcm;rate=16000"}`（24k 直送标 `rate=24000` 实测也能识别，没用）；`SetMuted(true)` 发一次 `realtimeInput.audioStreamEnd:true`、静音期间不发音频。文字轮 `clientContent {turns:[{role:"user", parts:[{text}]}], turnComplete:true}`。
+- 下行：`serverContent.modelTurn.parts[].inlineData.data`（PCM16 24k）→ `AudioDelta`；`outputTranscription.text` 逐段 → `TextDelta`，攒到 `turnComplete` → `AssistantText`；`inputTranscription.text` 攒到下一个 `modelTurn` / `voiceActivity {type:"ACTIVITY_END"}` → `UserText`；`voiceActivity {type:"ACTIVITY_START"}` 或 `serverContent.interrupted` → `SpeechStarted`，被打断那条的迟到音频丢到 `turnComplete`；服务端自己停，`Cancel` 空操作。
+- 工具：`toolCall.functionCalls[] {id, name, args(对象)}`（之前没有 `turnComplete`）并行执行（20 秒超时）→ 一条 `toolResponse.functionResponses[] {id, name, response:{result:<工具原字符串>}}`，不用再触发；`toolCallCancellation.ids` 取消对应执行、不回传。`turnComplete` 时没有工具批次在跑才 `TurnDone`。
+- 续接：存 `sessionResumptionUpdate` 里 `resumable:true` 的 `newHandle`；收到 `goAway {timeLeft}` 立刻新开连接、setup 带 `sessionResumption.handle`，换好再关旧连接，同一个 Session 对会话层透明（换的那一下丢的音频不补）。`MaxAge` 0。
+- 用量：`usageMetadata` 跟 `turnComplete` 同一条到（11-01 实测）：`promptTokenCount`、`responseTokenCount`、`thoughtsTokenCount`、`promptTokensDetails[] / responseTokensDetails[] {modality: TEXT|AUDIO, tokenCount}`；思考 token 不在 `responseTokenCount` 里、按文本出计入 `output` / `text_out`。按 `internal/voice/gemini/prices.go`（美元/百万 token：文本入 0.75、音频入 3、文本出 4.5、音频出 12）每轮写一行 usage.log，`model` 写 `gemini/<model>`，`cached` 恒 0。
+
 
 ## 5. 工具（移植自 `~/data/claude/voice-probe/tools.mjs`，已在实验里验证）
 
