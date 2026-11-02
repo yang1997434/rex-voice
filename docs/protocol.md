@@ -64,6 +64,16 @@ Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.
 - 会话上限 120 分钟；`SetMuted` 空操作。
 - 用量：`response.done.usage` 的 `input_tokens`、`output_tokens`、`input_tokens_details.{text_tokens,audio_tokens}`、`output_tokens_details.{text_tokens,audio_tokens}`（注意是 `tokens_details`），按 `internal/voice/qwen/prices.go` 北京价（元/百万 token：文本入 1.5、音频入 6、文本出 4.5、音频出 12，出处 https://help.aliyun.com/zh/model-studio/model-pricing ，按 7.2 折美元）写同格式 usage.log 行，`cached` 恒 0。
 
+### 4.3 Google Gemini Live API（WebSocket）
+
+- 端点 `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=<key>`（`Extra.url` 整体覆盖，照样追加 `?key=`）；key 在 URL 里，日志和错误文案只写不带 `key=` 的地址。头 `User-Agent: rex-voiced/<version>`。服务端消息是二进制帧 JSON；出错一律是关闭帧（1007 / 1008 + 原因），Mac 读出原因报 `Handlers.Error` 并结束会话。实现在 `internal/voice/gemini`。
+- 第一条发 `setup`：`model: "models/<model>"`、`generationConfig {responseModalities:["AUDIO"], speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName}`（默认 `Kore`；`responseModalities` 放 setup 顶层会被 1007 拒，11-01 实测）、`systemInstruction.parts[0].text`、`tools[0].functionDeclarations[] {name, description, behavior:"BLOCKING", parametersJsonSchema}`（**不能用 `parameters`**：它不认 `additionalProperties`，1007）、`realtimeInputConfig.automaticActivityDetection.silenceDurationMs: 700`、`outputAudioTranscription:{}`、开转写时 `inputAudioTranscription:{}`、`sessionResumption:{handle?}`、`contextWindowCompression.slidingWindow:{}`；等 `setupComplete`（10 秒）。文字模式发 `responseModalities:["TEXT"]`，`gemini-3.8-live` 在第一轮回 1007「response modalities (TEXT) is not supported」，所以 `rex-voiced chat` 用不了 gemini。
+- 上行：24k 经 `voice.Downsampler` 转 16k，`realtimeInput.audio {data, mimeType:"audio/pcm;rate=16000"}`（24k 直送标 `rate=24000` 实测也能识别，没用）；`SetMuted(true)` 发一次 `realtimeInput.audioStreamEnd:true`、静音期间不发音频。文字轮 `clientContent {turns:[{role:"user", parts:[{text}]}], turnComplete:true}`。
+- 下行：`serverContent.modelTurn.parts[].inlineData.data`（PCM16 24k）→ `AudioDelta`；`outputTranscription.text` 逐段 → `TextDelta`，攒到 `turnComplete` → `AssistantText`；`inputTranscription.text` 攒到下一个 `modelTurn` / `voiceActivity {type:"ACTIVITY_END"}` → `UserText`；`voiceActivity {type:"ACTIVITY_START"}` 或 `serverContent.interrupted` → `SpeechStarted`，被打断那条的迟到音频丢到 `turnComplete`；服务端自己停，`Cancel` 空操作。
+- 工具：`toolCall.functionCalls[] {id, name, args(对象)}`（之前没有 `turnComplete`）并行执行（20 秒超时）→ 一条 `toolResponse.functionResponses[] {id, name, response:{result:<工具原字符串>}}`，不用再触发；`toolCallCancellation.ids` 取消对应执行、不回传。`turnComplete` 时没有工具批次在跑才 `TurnDone`。
+- 续接：存 `sessionResumptionUpdate` 里 `resumable:true` 的 `newHandle`；收到 `goAway {timeLeft}` 立刻新开连接、setup 带 `sessionResumption.handle`，换好再关旧连接，同一个 Session 对会话层透明（换的那一下丢的音频不补）。`MaxAge` 0。
+- 用量：`usageMetadata` 跟 `turnComplete` 同一条到（11-01 实测）：`promptTokenCount`、`responseTokenCount`、`thoughtsTokenCount`、`promptTokensDetails[] / responseTokensDetails[] {modality: TEXT|AUDIO, tokenCount}`；思考 token 不在 `responseTokenCount` 里、按文本出计入 `output` / `text_out`。按 `internal/voice/gemini/prices.go`（美元/百万 token：文本入 0.75、音频入 3、文本出 4.5、音频出 12）每轮写一行 usage.log，`model` 写 `gemini/<model>`，`cached` 恒 0。
+
 ### 4.4 xAI Grok Voice（WebSocket；2026-11-01 真 key 跑通文字 / 工具 / 语音，扁平 tools、不带 type 的 session.update 服务端都收）
 
 - `wss://api.x.ai/v1/realtime?model=<model>&reasoning.effort=none`（默认 `grok-voice-3.0`；`Extra.reasoning` 改 effort，服务端默认 `high` 拖慢首包；`Extra.url` 覆盖端点），头同 4.1。连上发 `session.update` 等 `session.updated`（10 秒）。事件名同 OpenAI GA，实现在 `internal/voice/grok`（从 openai 包复制改的）。
@@ -72,6 +82,7 @@ Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.
 - 打断：`speech_started` → `SpeechStarted` + `conversation.item.truncate`（同 4.1），不发 `response.cancel`（server VAD 自己取消）。
 - 工具：同 4.1 批处理，但这轮回复出过音频的，`response.create` 要等到它的 `response.output_audio.done`（或用户插话，最多等 10 秒）再发——xAI 说上一条音频没到齐就 create 会叠音；本地播放有没有播完不管。裁剪工具项同 4.1（`conversation.item.delete`）。会话上限 120 分钟，`SetMuted` 空操作。
 - 用量：按连接时长计费（$0.08/分钟，含静音），每条 `SendText` 另加 $0.004，`function_call_output` 免费（`prices.go`）。`response.done` 只报 tokens、`usd` 记 0；`Close`（含拨号失败）时写一行 usage.log：4.1 的字段加 `seconds`，`input` / `output` 是整个会话的 token 合计，其余 0。
+
 
 
 ## 5. 工具（移植自 `~/data/claude/voice-probe/tools.mjs`，已在实验里验证）
