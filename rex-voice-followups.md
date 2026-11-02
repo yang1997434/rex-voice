@@ -81,3 +81,6 @@
 - [ ] AskUserQuestion 一次多道题：窗格一直 blocked，Mac 只发第一题的 ask；下一批看 capture 能不能分出第几题。
 - [ ] Mac 连中继失败的日志里带完整 URL（含邀请码）；下一批打码。
 - [ ] 设置页「声音」小节右上说明文字还是「通义 Qwen」。
+- [已做] 0.3.4（build 202611021415，commit a09034a）：锁屏点通知崩溃（通知代理回调改主线程隔离，记忆 ios-notification-delegate-nonisolated-crash）；多题每题都推、题干与选项同一次截屏、Submit 页题目「提交答案？」；邀请码打码；设置页「千问」。Mac 安装包 v0.3.4 挂在 GitHub Releases；朋友上手流程 docs/getting-started.md。
+- [ ] 真机验：0.3.4 锁屏点通知不崩；连问两题每题一张卡、题目选项对得上；内屏竖栏对齐。
+- [ ] Rex 下载地址：getting-started.md 里写「向分享人要」，确定官方地址后补上。
