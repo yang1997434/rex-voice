@@ -29,7 +29,17 @@ final class CallController {
         }
     }
 
+    /// Relay host of the current pairing (shown on screen; the Mac has no name in the pairing).
+    private(set) var relayHost: String?
+    /// When this phone scanned the current pairing; nil for pairings made before this was recorded.
+    private(set) var pairedAt: Date?
+    /// Mic level 0...1 while a call runs (see `AudioEngine.level`).
+    var level: Float { audio.level }
+
     @ObservationIgnored private let audio = AudioEngine()
+    @ObservationIgnored private let settings: AppSettings
+    /// The `call.start` of the running call, resent as-is after a reconnect. Holds the API key only for the call.
+    @ObservationIgnored private var startMessage: ControlMessage?
     @ObservationIgnored private var relay: RelayClient?
     @ObservationIgnored private var eventsTask: Task<Void, Never>?
     @ObservationIgnored private var uplinkTask: Task<Void, Never>?
@@ -38,8 +48,11 @@ final class CallController {
     private static let thresholdKey = "energyThreshold"
     private static let pairingAccount = "pairing"
     private static let deviceAccount = "device_id"
+    private static let pairedAtKey = "pairedAt"
 
-    init() {
+    init(settings: AppSettings) {
+        self.settings = settings
+        pairedAt = UserDefaults.standard.object(forKey: Self.pairedAtKey) as? Date
         threshold = UserDefaults.standard.object(forKey: Self.thresholdKey) as? Double ?? 0.01
         audio.threshold = Float(threshold)
         audio.onError = { [weak self] in self?.notice = $0 }
@@ -53,22 +66,6 @@ final class CallController {
         }
     }
 
-    var statusText: String {
-        switch link {
-        case .unpaired: return "未配对"
-        case .connecting: return "连接中…"
-        case .macOffline: return "Mac 不在线"
-        case .ready:
-            guard inCall else { return "待机" }
-            switch callState {
-            case "listening": return "通话中 · 在听"
-            case "thinking": return "通话中 · 在想"
-            case "speaking": return "通话中 · 在说"
-            default: return "通话中 · 接通中…"
-            }
-        }
-    }
-
     var canToggleCall: Bool { inCall || link == .ready }
 
     /// A scanned QR payload. Throws (and keeps the old pairing) when it is not a valid `rexvoice://pair` URL.
@@ -76,6 +73,8 @@ final class CallController {
         guard let url = URL(string: code) else { throw PairingError.badScheme }
         let p = try Pairing.parse(url)
         try Keychain.set(Data(code.utf8), account: Self.pairingAccount, accessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly)
+        pairedAt = Date()
+        UserDefaults.standard.set(pairedAt, forKey: Self.pairedAtKey)
         endCall(notice: nil)
         transcript = []
         try connect(p)
@@ -88,6 +87,13 @@ final class CallController {
             return
         }
         guard link == .ready, let relay else { return }
+        let start: ControlMessage
+        do {
+            start = try settings.callStart()
+        } catch {
+            notice = error.localizedDescription
+            return
+        }
         guard await AVAudioApplication.requestRecordPermission() else {
             notice = "没有麦克风权限：到 设置 > Rex Voice 打开"
             return
@@ -106,7 +112,8 @@ final class CallController {
         inCall = true
         callState = "connecting"
         transcript = []
-        await relay.send(.callStart)
+        startMessage = start
+        await relay.send(start)
     }
 
     private func endCall(notice: String?) {
@@ -115,6 +122,7 @@ final class CallController {
         audio.stop()
         inCall = false
         callState = ""
+        startMessage = nil
         if let notice { self.notice = notice }
     }
 
@@ -126,6 +134,7 @@ final class CallController {
         let client = RelayClient(pairing: pairing, userAgent: "RexVoice-iOS/\(version)",
                                  hello: .hello(app: version, device: Self.machine(), deviceID: deviceID))
         relay = client
+        relayHost = pairing.relay.host()
         link = .connecting
         eventsTask = Task { [weak self] in
             for await e in client.events { self?.handle(e) }
@@ -142,7 +151,7 @@ final class CallController {
         case .ready:
             link = .ready
             // The Mac keeps a call across a phone reconnect; call.start is idempotent there.
-            if inCall, let relay { Task { await relay.send(.callStart) } }
+            if inCall, let relay, let startMessage { Task { await relay.send(startMessage) } }
         case let .failed(message):
             notice = message
         case let .audio(pcm):
@@ -202,6 +211,12 @@ extension CallController {
             Line(fromUser: true, text: "让它先别提交，等我回去看"),
         ]
         notice = nil
+
+        if screen != .unpaired {
+            relayHost = "r.maruiao.top"
+            pairedAt = Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 21, minute: 30))
+        }
+        audio.setPreviewLevel(screen == .listening ? 0.7 : 0)
         switch screen {
         case .unpaired:
             link = .unpaired; inCall = false; transcript = []

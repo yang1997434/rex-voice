@@ -1,10 +1,13 @@
 import AVFAudio
 import Foundation
+import Observation
+import QuartzCore
 import RexVoiceCore
 
 /// Microphone -> 24 kHz mono PCM16 20 ms frames (gated), and playback of the Mac's PCM16 24 kHz.
 /// Recovers from interruptions (calls, Siri), route changes (headphones) and engine resets.
 @MainActor
+@Observable
 final class AudioEngine {
     enum Failure: LocalizedError {
         case noInput, noConverter
@@ -17,18 +20,26 @@ final class AudioEngine {
     }
 
     /// Called on the main actor with a short message when audio fails after start.
-    var onError: ((String) -> Void)?
-    var threshold: Float = 0.01 {
+    @ObservationIgnored var onError: ((String) -> Void)?
+    @ObservationIgnored var threshold: Float = 0.01 {
         didSet { uplink?.setThreshold(threshold) }
     }
+    /// Mic input level before the gate, 0...1 on a log scale (`Self.normalized`), updated every 50 ms while running.
+    private(set) var level: Float = 0
 
-    private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    /// RMS (0...1) to the meter scale: -60 dBFS..0 dBFS -> 0...1, so quiet speech still moves the bar.
+    nonisolated static func normalized(_ rms: Float) -> Float {
+        guard rms > 0 else { return 0 }
+        return min(1, max(0, (20 * log10(rms) + 60) / 60))
+    }
+
+    @ObservationIgnored private let engine = AVAudioEngine()
+    @ObservationIgnored private let player = AVAudioPlayerNode()
     /// The mixer resamples this to the hardware output format.
-    private let playFormat = AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1)!
-    private var uplink: Uplink?
-    private var observers: [NSObjectProtocol] = []
-    private var running = false
+    @ObservationIgnored private let playFormat = AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1)!
+    @ObservationIgnored private var uplink: Uplink?
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    @ObservationIgnored private var running = false
 
     init() {
         engine.attach(player)
@@ -40,7 +51,12 @@ final class AudioEngine {
         try session.setCategory(.playAndRecord, mode: .voiceChat,
                                 options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker])
         try session.setActive(true)
-        let up = Uplink(threshold: threshold, onFrame: onFrame) { [weak self] message in
+        let up = Uplink(threshold: threshold, onFrame: onFrame, onLevel: { [weak self] rms in
+            Task { @MainActor in
+                guard let self, self.running else { return }
+                self.level = Self.normalized(rms)
+            }
+        }) { [weak self] message in
             Task { @MainActor in self?.onError?(message) }
         }
         uplink = up
@@ -64,8 +80,14 @@ final class AudioEngine {
         player.stop()
         engine.stop()
         uplink = nil
+        level = 0
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
+
+    #if DEBUG
+    /// Screenshots only: a fixed level for the listening halo without a microphone.
+    func setPreviewLevel(_ v: Float) { level = v }
+    #endif
 
     /// Queues one PCM16 LE 24 kHz mono chunk from the Mac.
     func play(_ pcm: Data) {
@@ -158,13 +180,18 @@ private final class Uplink: @unchecked Sendable {
     private var framer = PCMFramer() // guarded by lock
     private var converter: AVAudioConverter? // guarded by lock
     private var reported = false // guarded by lock
+    private var peak: Float = 0 // guarded by lock; loudest buffer RMS since the last level report
+    private var lastReport: CFTimeInterval = 0 // guarded by lock
     private let onFrame: @Sendable (Data) -> Void
+    private let onLevel: @Sendable (Float) -> Void
     private let onError: @Sendable (String) -> Void
     private let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: true)!
 
-    init(threshold: Float, onFrame: @escaping @Sendable (Data) -> Void, onError: @escaping @Sendable (String) -> Void) {
+    init(threshold: Float, onFrame: @escaping @Sendable (Data) -> Void, onLevel: @escaping @Sendable (Float) -> Void,
+         onError: @escaping @Sendable (String) -> Void) {
         gate = EnergyGate(threshold: threshold)
         self.onFrame = onFrame
+        self.onLevel = onLevel
         self.onError = onError
     }
 
@@ -185,10 +212,10 @@ private final class Uplink: @unchecked Sendable {
     }
 
     private func process(_ input: AVAudioPCMBuffer) {
-        let (frames, failure) = lock.withLock { () -> ([Data], String?) in
-            guard let converter else { return ([], nil) }
+        let (frames, failure, level) = lock.withLock { () -> ([Data], String?, Float?) in
+            guard let converter else { return ([], nil, nil) }
             let capacity = AVAudioFrameCount(Double(input.frameLength) * outFormat.sampleRate / input.format.sampleRate) + 64
-            guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return ([], nil) }
+            guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return ([], nil, nil) }
             var fed = false
             var error: NSError?
             let status = converter.convert(to: out, error: &error) { _, inputStatus in
@@ -202,12 +229,29 @@ private final class Uplink: @unchecked Sendable {
             }
             guard status != .error else {
                 defer { reported = true }
-                return ([], reported ? nil : "麦克风转换失败：\(error?.localizedDescription ?? "未知错误")")
+                return ([], reported ? nil : "麦克风转换失败：\(error?.localizedDescription ?? "未知错误")", nil)
             }
             let samples = UnsafeBufferPointer(start: out.int16ChannelData![0], count: Int(out.frameLength))
-            return (framer.push(samples).filter { gate.shouldSend(frame: $0) }, nil)
+            peak = max(peak, Self.rms(samples))
+            // Throttled to 20 Hz so the main actor (and any meter view) is not woken per buffer.
+            var report: Float?
+            let now = CACurrentMediaTime()
+            if now - lastReport >= 0.05 {
+                report = peak
+                peak = 0
+                lastReport = now
+            }
+            return (framer.push(samples).filter { gate.shouldSend(frame: $0) }, nil, report)
         }
         if let failure { onError(failure) }
+        if let level { onLevel(level) }
         frames.forEach(onFrame)
+    }
+
+    private static func rms(_ samples: UnsafeBufferPointer<Int16>) -> Float {
+        guard !samples.isEmpty else { return 0 }
+        var sum: Double = 0
+        for s in samples { sum += Double(s) * Double(s) }
+        return Float((sum / Double(samples.count)).squareRoot() / 32768)
     }
 }

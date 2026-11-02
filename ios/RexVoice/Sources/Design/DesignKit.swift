@@ -1,18 +1,6 @@
 import SwiftUI
 
-/// The design drafts (a–c Liquid Glass, d–e persona round). They compile into every build so the archive proves
-/// the APIs against the device SDK, but only a DEBUG build with `REXVOICE_DESIGN=a|b|c|d|e` ever shows one.
-enum DesignVariant: String {
-    case a, b, c, d, e
-
-    #if DEBUG
-    static var current: DesignVariant? {
-        ProcessInfo.processInfo.environment["REXVOICE_DESIGN"].flatMap(DesignVariant.init(rawValue:))
-    }
-    #endif
-}
-
-/// Which screen a design preview opens on (`REXVOICE_PREVIEW`); `settings` / `pair` open that sheet.
+/// DEBUG screenshots (`REXVOICE_PREVIEW`): which state the screen fakes; `settings` / `pair` open that page.
 enum PreviewScreen: String {
     case unpaired, connecting, offline, idle, listening, thinking, speaking, settings, pair
 
@@ -23,35 +11,7 @@ enum PreviewScreen: String {
     #endif
 }
 
-enum DesignSheet: String, Identifiable {
-    case settings, pair
-    var id: String { rawValue }
-}
-
-struct DesignRoot: View {
-    let variant: DesignVariant
-    var initialSheet: DesignSheet?
-
-    init(variant: DesignVariant, initialSheet: DesignSheet? = nil) {
-        self.variant = variant
-        self.initialSheet = initialSheet
-        #if DEBUG
-        PersonaStyle.applyPreviewOverride()
-        #endif
-    }
-
-    var body: some View {
-        switch variant {
-        case .a: PhoneDesign(initialSheet: initialSheet)
-        case .b: ChatDesign(initialSheet: initialSheet)
-        case .c: DashboardDesign(initialSheet: initialSheet)
-        case .d: RoomDesign(initialSheet: initialSheet)
-        case .e: CardDesign(initialSheet: initialSheet)
-        }
-    }
-}
-
-/// What the screen shows, read off CallController's link + call state (same mapping as `statusText`).
+/// What the screen shows, read off CallController's link + call state.
 enum CallPhase: Equatable {
     case unpaired, connecting, offline, idle, dialing, listening, thinking, speaking
 
@@ -97,32 +57,6 @@ enum CallPhase: Equatable {
         }
     }
 
-    var color: Color {
-        switch self {
-        case .unpaired: .indigo
-        case .connecting: .gray
-        case .offline: .red
-        case .idle: .blue
-        case .dialing: .teal
-        case .listening: .green
-        case .thinking: .purple
-        case .speaking: .orange
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .unpaired: "qrcode.viewfinder"
-        case .connecting: "antenna.radiowaves.left.and.right"
-        case .offline: "desktopcomputer.trianglebadge.exclamationmark"
-        case .idle: "phone.fill"
-        case .dialing: "phone.connection.fill"
-        case .listening: "ear"
-        case .thinking: "ellipsis"
-        case .speaking: "speaker.wave.2.fill"
-        }
-    }
-
     var inCall: Bool { [.dialing, .listening, .thinking, .speaking].contains(self) }
     /// Audio is flowing one way or the other, so the wave moves.
     var live: Bool { self == .listening || self == .speaking }
@@ -132,31 +66,6 @@ extension CallController {
     var phase: CallPhase { CallPhase(self) }
     /// The main button also works unpaired: it opens the scanner instead of calling.
     var primaryEnabled: Bool { canToggleCall || link == .unpaired }
-}
-
-/// Placeholder pairing details until the next brief stores them with the pairing.
-enum DesignSample {
-    static let macName = "Andy 的 Mac mini"
-    static let pairedAt = "11 月 1 日 21:30"
-}
-
-extension View {
-    /// Same 5-second auto-hide as ContentView.
-    func autoHideNotice(_ controller: CallController) -> some View {
-        task(id: controller.notice) {
-            guard controller.notice != nil else { return }
-            try? await Task.sleep(for: .seconds(5))
-            if !Task.isCancelled { controller.notice = nil }
-        }
-    }
-}
-
-@MainActor func primaryAction(_ controller: CallController, openPair: () -> Void) {
-    if controller.link == .unpaired, !controller.inCall {
-        openPair()
-    } else {
-        Task { await controller.toggleCall() }
-    }
 }
 
 /// Bars that move while audio flows; frozen under Reduce Motion or when idle.

@@ -7,7 +7,7 @@ import Testing
     static let cases: [(ControlMessage, String)] = [
         (.hello(app: "1.0", device: "iPhone17,1", deviceID: "6F1C"),
          #"{"t":"hello","app":"1.0","device":"iPhone17,1","device_id":"6F1C"}"#),
-        (.callStart, #"{"t":"call.start"}"#),
+        (.callStart(provider: nil, model: nil, voice: nil, apiKey: nil), #"{"t":"call.start"}"#),
         (.callEnd, #"{"t":"call.end"}"#),
         (.status(state: "listening", detail: "已接通"), #"{"t":"status","state":"listening","detail":"已接通"}"#),
         (.status(state: "ended", detail: nil), #"{"t":"status","state":"ended"}"#), // what internal/call sends
@@ -27,6 +27,20 @@ import Testing
         #expect(try Self.object(encoded) == Self.object(Data(text.utf8)))
         #expect(try JSONDecoder().decode(ControlMessage.self, from: Data(text.utf8)) == msg)
         #expect(try JSONDecoder().decode(ControlMessage.self, from: encoded) == msg)
+    }
+
+    @Test func callStartOmitsNilFields() throws {
+        let msg = ControlMessage.callStart(provider: "qwen", model: "qwen3.8-omni-flash-realtime", voice: nil, apiKey: "sk-1234")
+        #expect(try Self.object(JSONEncoder().encode(msg))
+            == Self.object(Data(#"{"t":"call.start","provider":"qwen","model":"qwen3.8-omni-flash-realtime","api_key":"sk-1234"}"#.utf8)))
+    }
+
+    @Test func callStartDecodesOldAndNewForms() throws {
+        let old = try JSONDecoder().decode(ControlMessage.self, from: Data(#"{"t":"call.start"}"#.utf8))
+        #expect(old == .callStart(provider: nil, model: nil, voice: nil, apiKey: nil))
+        let new = try JSONDecoder().decode(ControlMessage.self, from: Data(
+            #"{"t":"call.start","provider":"grok","model":"grok-voice-3.0","voice":"ara","api_key":"xai-1"}"#.utf8))
+        #expect(new == .callStart(provider: "grok", model: "grok-voice-3.0", voice: "ara", apiKey: "xai-1"))
     }
 
     @Test func unknownTypeDoesNotThrow() throws {

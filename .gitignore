@@ -13,3 +13,9 @@ xcuserdata/
 pair-*.json
 .claude/worktrees/
 ios/RexVoice/*.xcodeproj
+
+# 第三方参考图不入库（只留 source.md 出处记录），2026-11-02
+docs/design-specs/personas/_refs/**/*.webp
+docs/design-specs/personas/_refs/**/*.png
+docs/design-specs/personas/_refs/**/*.jpg
+docs/design-specs/personas/_refs/**/*.txt

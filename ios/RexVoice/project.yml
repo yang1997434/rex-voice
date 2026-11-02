@@ -17,7 +17,7 @@ targets:
   RexVoice:
     type: application
     platform: iOS
-    sources: [Sources, Assets.xcassets]
+    sources: [Sources, Assets.xcassets, Resources]
     dependencies:
       - package: RexVoiceCore
     settings:

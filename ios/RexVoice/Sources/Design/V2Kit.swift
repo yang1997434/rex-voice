@@ -1,56 +1,8 @@
 import SwiftUI
 import UIKit
 
-// Second-round drafts (D「房间」/ E「卡片」): the persona is the protagonist, the surfaces are
-// gradient + light + grain instead of plain system glass.
-
-/// Which Claude look the user picked. Images live in `Assets.xcassets/Personas/<style>/<state>`.
-enum PersonaStyle: String, CaseIterable, Identifiable {
-    case pixel, chibi, watercolor, neon
-    var id: String { rawValue }
-
-    static let storageKey = "v2.persona"
-
-    var title: String {
-        switch self {
-        case .pixel: "像素"
-        case .chibi: "Q 版"
-        case .watercolor: "水彩"
-        case .neon: "霓虹"
-        }
-    }
-
-    var blurb: String {
-        switch self {
-        case .pixel: "原版半身立绘"
-        case .chibi: "圆滚滚的小只"
-        case .watercolor: "纸纹和晕染"
-        case .neon: "青紫霓虹边光"
-        }
-    }
-
-    /// False while a group's art has not landed yet; the carousel shows it as「待补」.
-    var available: Bool { UIImage(named: Self.name(self, .idle)) != nil }
-
-    static func name(_ style: PersonaStyle, _ state: PersonaState) -> String {
-        "Personas/\(style.rawValue)/\(state.rawValue)"
-    }
-
-    /// Falls back to the pixel group for any state a group is missing.
-    static func resolved(_ style: PersonaStyle, _ state: PersonaState) -> String {
-        let n = name(style, state)
-        return UIImage(named: n) != nil ? n : name(.pixel, state)
-    }
-
-    #if DEBUG
-    /// `REXVOICE_PERSONA=chibi` picks the group for screenshots.
-    static func applyPreviewOverride() {
-        if let raw = ProcessInfo.processInfo.environment["REXVOICE_PERSONA"], PersonaStyle(rawValue: raw) != nil {
-            UserDefaults.standard.set(raw, forKey: storageKey)
-        }
-    }
-    #endif
-}
+// Design E「卡片」 kit: the persona is the protagonist, the surfaces are gradient + light + grain
+// instead of plain system glass.
 
 /// The five expressions every group draws.
 enum PersonaState: String, CaseIterable {
@@ -58,9 +10,9 @@ enum PersonaState: String, CaseIterable {
 
     init(_ phase: CallPhase) {
         switch phase {
-        case .unpaired, .connecting, .idle: self = .idle
-        case .offline: self = .offline
-        case .dialing, .listening: self = .listening
+        case .unpaired, .offline: self = .offline
+        case .idle: self = .idle
+        case .connecting, .dialing, .listening: self = .listening
         case .thinking: self = .thinking
         case .speaking: self = .speaking
         }
@@ -69,12 +21,12 @@ enum PersonaState: String, CaseIterable {
 
 /// The persona image: 300 ms crossfade between states, a slow breath while speaking.
 struct PersonaView: View {
-    let style: PersonaStyle
+    let persona: Persona
     let state: PersonaState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let name = PersonaStyle.resolved(style, state)
+        let name = persona.image(state)
         TimelineView(.animation(paused: state != .speaking || reduceMotion)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let breath = state == .speaking && !reduceMotion ? 1 + 0.018 * sin(t * 2 * .pi / 2.4) : 1
@@ -89,40 +41,37 @@ struct PersonaView: View {
         }
         .animation(.easeInOut(duration: 0.3), value: name)
         .accessibilityElement()
-        .accessibilityLabel("Claude 形象，\(style.title)")
+        .accessibilityLabel("Claude 形象，\(persona.name)")
     }
 }
 
-/// Stand-in mic level until AudioEngine exposes one (implementation brief): a lively wobble.
-func fakeLevel(_ t: TimeInterval) -> Double {
-    min(1, 0.25 + 0.75 * abs(sin(t * 2.3)) * (0.55 + 0.45 * abs(sin(t * 0.7 + 1))))
-}
-
-/// Rings of light around the persona that swell with the voice while listening.
+/// Rings of light around the persona that swell with the mic level while listening.
 struct VoiceHalo: View {
     var active: Bool
+    /// `AudioEngine.level`, 0...1.
+    var level: Double
     var color: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(paused: !active || reduceMotion)) { ctx in
-            let level = active ? (reduceMotion ? 0.5 : fakeLevel(ctx.date.timeIntervalSinceReferenceDate)) : 0
-            GeometryReader { geo in
-                let d = min(geo.size.width, geo.size.height)
-                ZStack {
+        // Reduce Motion: a steady halo instead of one that swells with the voice.
+        let shown = active ? (reduceMotion ? 0.5 : level) : 0
+        GeometryReader { geo in
+            let d = min(geo.size.width, geo.size.height)
+            ZStack {
+                Circle()
+                    .fill(RadialGradient(colors: [color.opacity(0.55 * shown), .clear],
+                                         center: .center, startRadius: d * 0.1, endRadius: d * 0.55))
+                ForEach(0..<3, id: \.self) { i in
                     Circle()
-                        .fill(RadialGradient(colors: [color.opacity(0.55 * level), .clear],
-                                             center: .center, startRadius: d * 0.1, endRadius: d * 0.55))
-                    ForEach(0..<3, id: \.self) { i in
-                        Circle()
-                            .stroke(color.opacity((0.5 - Double(i) * 0.14) * level), lineWidth: 1.5)
-                            .frame(width: d * (0.72 + Double(i) * 0.13 + 0.08 * level),
-                                   height: d * (0.72 + Double(i) * 0.13 + 0.08 * level))
-                    }
+                        .stroke(color.opacity((0.5 - Double(i) * 0.14) * shown), lineWidth: 1.5)
+                        .frame(width: d * (0.72 + Double(i) * 0.13 + 0.08 * shown),
+                               height: d * (0.72 + Double(i) * 0.13 + 0.08 * shown))
                 }
-                .frame(width: geo.size.width, height: geo.size.height)
             }
+            .frame(width: geo.size.width, height: geo.size.height)
         }
+        .animation(.linear(duration: 0.05), value: shown)
         .opacity(active ? 1 : 0)
         .animation(.easeInOut(duration: 0.3), value: active)
         .accessibilityHidden(true)
@@ -183,36 +132,6 @@ struct Mood {
     }
 }
 
-/// Deep gradient + soft blurred light pools + grain: the「房间」 the persona stands in.
-struct AmbientBackground: View {
-    let mood: Mood
-    var glowCenter = UnitPoint(x: 0.5, y: 0.36)
-
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width, h = geo.size.height
-            ZStack {
-                LinearGradient(colors: [mood.top, mood.bottom], startPoint: .top, endPoint: .bottom)
-                Circle().fill(mood.glow.opacity(0.55))
-                    .frame(width: w * 1.1, height: w * 1.1)
-                    .blur(radius: 90)
-                    .position(x: w * glowCenter.x, y: h * glowCenter.y)
-                Circle().fill(mood.glow.opacity(0.25))
-                    .frame(width: w * 0.8, height: w * 0.8)
-                    .blur(radius: 110)
-                    .position(x: w * 0.05, y: h * 0.92)
-                Circle().fill(mood.accent.opacity(0.18))
-                    .frame(width: w * 0.7, height: w * 0.7)
-                    .blur(radius: 100)
-                    .position(x: w * 1.0, y: h * 0.08)
-                GrainOverlay(opacity: 0.08)
-            }
-        }
-        .ignoresSafeArea()
-        .accessibilityHidden(true)
-    }
-}
-
 /// Press feedback: 0.96 over 150 ms, none when disabled.
 struct PressScale: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
@@ -266,7 +185,7 @@ struct V2CallButton: View {
     }
 }
 
-/// Round icon button used in both drafts' top bars.
+/// Round icon button for the top bars.
 struct V2IconButton: View {
     let title: String
     let symbol: String
@@ -291,90 +210,6 @@ struct V2IconButton: View {
 struct Wordmark: View {
     var body: some View {
         Text("Rex Voice").font(.system(.title3, design: .serif).weight(.semibold))
-    }
-}
-
-// MARK: - Voice catalog (layout only; the real lists come with the provider brief)
-
-struct VoiceOption: Identifiable, Hashable {
-    let name: String
-    let value: String
-    let blurb: String
-    var id: String { value }
-}
-
-enum VoiceProvider: String, CaseIterable, Identifiable {
-    case openai, qwen, gemini, grok
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .openai: "OpenAI"
-        case .qwen: "通义 Qwen"
-        case .gemini: "Gemini"
-        case .grok: "Grok"
-        }
-    }
-
-    /// Letter on the brand-colored block (no logo art in the app).
-    var mark: String {
-        switch self {
-        case .openai: "O"
-        case .qwen: "Q"
-        case .gemini: "G"
-        case .grok: "X"
-        }
-    }
-
-    var brand: LinearGradient {
-        let colors: [Color] = switch self {
-        case .openai: [Color(red: 0.06, green: 0.64, blue: 0.5), Color(red: 0.03, green: 0.45, blue: 0.36)]
-        case .qwen: [Color(red: 0.43, green: 0.36, blue: 0.98), Color(red: 0.31, green: 0.24, blue: 0.85)]
-        case .gemini: [Color(red: 0.26, green: 0.52, blue: 0.96), Color(red: 0.61, green: 0.4, blue: 0.95)]
-        case .grok: [Color(white: 0.22), Color(white: 0.05)]
-        }
-        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
-    }
-
-    /// The Gemini list is a placeholder until the provider research is checked.
-    var unverified: Bool { self == .gemini }
-
-    /// Total voices when the list above is only the first part (Grok has 28); shows a「自定义」row.
-    var moreVoices: Int? { self == .grok ? 28 : nil }
-
-    // shortcut: model lists beyond the Go defaults (internal/voice/voice.go) are placeholders; the provider brief fixes them.
-    var models: [String] {
-        switch self {
-        case .openai: ["gpt-realtime-2.1", "gpt-realtime-mini"]
-        case .qwen: ["qwen3.8-omni-flash-realtime", "qwen3-omni-flash-realtime"]
-        case .gemini: ["gemini-3.8-live"]
-        case .grok: ["grok-voice-3.0"]
-        }
-    }
-
-    var voices: [VoiceOption] {
-        func v(_ n: String, _ b: String, _ value: String? = nil) -> VoiceOption { VoiceOption(name: n, value: value ?? n, blurb: b) }
-        switch self {
-        case .openai:
-            return [v("Marin", "温和自然的女声，像身边的同事", "marin"), v("Cedar", "沉稳低缓的男声", "cedar"),
-                    v("Alloy", "中性清亮，不偏男女", "alloy"), v("Ash", "干脆利落的男声", "ash"),
-                    v("Ballad", "柔和，带点英伦腔", "ballad"), v("Coral", "明亮热情的女声", "coral"),
-                    v("Echo", "平稳清晰的男声", "echo"), v("Sage", "安静知性的女声", "sage"),
-                    v("Shimmer", "轻快柔亮的女声", "shimmer"), v("Verse", "有表现力，像在讲故事", "verse")]
-        case .qwen:
-            return [v("Tina", "亲切利落的女声"), v("Liora Mira", "温柔细腻的女声"), v("Raymond", "成熟稳重的男声"),
-                    v("Ryan", "阳光有活力的男声"), v("Mia", "甜美轻快的女声"), v("Serena", "优雅舒缓的女声"),
-                    v("Evan", "清爽的少年感男声"), v("Momo", "俏皮可爱的女声"), v("Zane", "低沉有磁性的男声（3.8 新增）"),
-                    v("Cici", "元气满满的女声（3.8 新增）")]
-        case .gemini:
-            return [v("Puck", "轻快俏皮"), v("Charon", "沉稳，播报感"), v("Kore", "坚定清晰"), v("Fenrir", "激昂有力"),
-                    v("Aoede", "轻盈明快"), v("Leda", "年轻清新"), v("Orus", "稳重厚实"), v("Zephyr", "明亮通透")]
-        case .grok:
-            // Real list from the Grok API (2026-11-01, 28 voices); the first ten, the rest behind「自定义」.
-            return [v("Ara", "女声，默认", "ara"), v("Eve", "女声", "eve"), v("Aurora", "女声", "aurora"),
-                    v("Luna", "女声", "luna"), v("Iris", "女声", "iris"), v("Celeste", "女声", "celeste"),
-                    v("Rex", "男声", "rex"), v("Leo", "男声", "leo"), v("Orion", "男声", "orion"), v("Atlas", "男声", "atlas")]
-        }
     }
 }
 

@@ -5,7 +5,8 @@ import Foundation
 public enum ControlMessage: Codable, Equatable, Sendable {
     // phone -> Mac
     case hello(app: String, device: String, deviceID: String)
-    case callStart
+    /// All four optional; nil fields are left out of the JSON and the Mac falls back to its own defaults.
+    case callStart(provider: String?, model: String?, voice: String?, apiKey: String?)
     case callEnd
     // Mac -> phone
     /// `detail` is optional: the Mac side currently sends status without it.
@@ -19,6 +20,7 @@ public enum ControlMessage: Codable, Equatable, Sendable {
 
     private enum Key: String, CodingKey {
         case t, app, device, deviceID = "device_id", state, detail, who, text, reason, msg
+        case provider, model, voice, apiKey = "api_key"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -29,7 +31,11 @@ public enum ControlMessage: Codable, Equatable, Sendable {
             self = .hello(app: try c.decode(String.self, forKey: .app),
                           device: try c.decode(String.self, forKey: .device),
                           deviceID: try c.decode(String.self, forKey: .deviceID))
-        case "call.start": self = .callStart
+        case "call.start":
+            self = .callStart(provider: try c.decodeIfPresent(String.self, forKey: .provider),
+                              model: try c.decodeIfPresent(String.self, forKey: .model),
+                              voice: try c.decodeIfPresent(String.self, forKey: .voice),
+                              apiKey: try c.decodeIfPresent(String.self, forKey: .apiKey))
         case "call.end": self = .callEnd
         case "status":
             self = .status(state: try c.decode(String.self, forKey: .state),
@@ -51,7 +57,12 @@ public enum ControlMessage: Codable, Equatable, Sendable {
             try c.encode(app, forKey: .app)
             try c.encode(device, forKey: .device)
             try c.encode(deviceID, forKey: .deviceID)
-        case .callStart: try c.encode("call.start", forKey: .t)
+        case let .callStart(provider, model, voice, apiKey):
+            try c.encode("call.start", forKey: .t)
+            try c.encodeIfPresent(provider, forKey: .provider)
+            try c.encodeIfPresent(model, forKey: .model)
+            try c.encodeIfPresent(voice, forKey: .voice)
+            try c.encodeIfPresent(apiKey, forKey: .apiKey)
         case .callEnd: try c.encode("call.end", forKey: .t)
         case let .status(state, detail):
             try c.encode("status", forKey: .t)
