@@ -185,21 +185,50 @@ var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
 
 func projectDirName(cwd string) string { return nonAlnum.ReplaceAllString(cwd, "-") }
 
+// claudeSummary is one read_claude item: Asked and Reply are short and speakable; Detail (Claude's last
+// two texts verbatim, oldest first) is only returned with verbose.
 type claudeSummary struct {
-	Title        string   `json:"title"`
-	LastActive   string   `json:"last_active"`
-	LastUser     string   `json:"last_user"`
-	ClaudeRecent []string `json:"claude_recent"`
-	Status       string   `json:"status"`
-	SessionName  string   `json:"session_name"`
+	Title       string   `json:"title"`
+	LastActive  string   `json:"last_active"`
+	Status      string   `json:"status"`
+	SessionName string   `json:"session_name"`
+	Asked       string   `json:"asked"`
+	Reply       string   `json:"reply"`
+	Detail      []string `json:"detail,omitempty"`
+}
+
+var (
+	reFence    = regexp.MustCompile("(?s)```.*?(```|$)")
+	reDropLine = regexp.MustCompile(`(?m)^[ \t]*(\|.*|-{3,}[ \t]*)$`) // table rows, horizontal rules
+	reLineMark = regexp.MustCompile(`(?m)^[ \t]*(#+|[-*+])[ \t]+`)
+	reInline   = regexp.MustCompile("`[^`\n]+`")
+	reURL      = regexp.MustCompile(`https?://[^\s)）\]>，。]+`)
+	reHomePath = regexp.MustCompile(`~/[\w.\-/]*`)
+	reAbsPath  = regexp.MustCompile(`(^|[^\w.\-/])(/[\w.\-]+){2,}/?`) // two segments up, so "/model" stays
+	reSpaces   = regexp.MustCompile(`\s+`)
+)
+
+// cleanText strips what a voice should not read out: code blocks, inline code, links, paths, tables and
+// markdown marks, then folds whitespace into single spaces.
+func cleanText(s string) string {
+	s = reFence.ReplaceAllString(s, " ")
+	s = reDropLine.ReplaceAllString(s, "")
+	s = reLineMark.ReplaceAllString(s, "")
+	s = reInline.ReplaceAllString(s, "代码")
+	s = reURL.ReplaceAllString(s, "链接")
+	s = reHomePath.ReplaceAllString(s, "某文件")
+	s = reAbsPath.ReplaceAllString(s, "${1}某文件")
+	s = strings.ReplaceAll(s, "*", "")
+	return strings.TrimSpace(reSpaces.ReplaceAllString(s, " "))
 }
 
 const noRecent = "两小时内没有活动的会话记录"
 
 func (e *env) readClaude(ctx context.Context, args json.RawMessage) (any, error) {
 	var a struct {
-		Pid   int    `json:"pid"`
-		Block string `json:"block"`
+		Pid     int    `json:"pid"`
+		Block   string `json:"block"`
+		Verbose bool   `json:"verbose"`
 	}
 	if err := decodeArgs(args, &a); err != nil {
 		return nil, err
@@ -251,6 +280,9 @@ func (e *env) readClaude(ctx context.Context, args json.RawMessage) (any, error)
 			return nil, err
 		}
 		sum.Status, sum.SessionName = status, s.Name
+		if !a.Verbose {
+			sum.Detail = nil
+		}
 		out = append(out, sum)
 	}
 	if len(out) == 0 {
@@ -292,7 +324,7 @@ func rowText(content json.RawMessage) string {
 // summarize reads the transcript backwards in chunks and stops once it has the last title,
 // the last user instruction and two assistant texts, so multi-MB transcripts are not read whole.
 func summarize(path string, mtime time.Time) (claudeSummary, error) {
-	sum := claudeSummary{LastActive: mtime.Format(time.RFC3339), ClaudeRecent: []string{}}
+	sum := claudeSummary{LastActive: mtime.Format(time.RFC3339), Detail: []string{}}
 	f, err := os.Open(path)
 	if err != nil {
 		return sum, err
@@ -302,9 +334,11 @@ func summarize(path string, mtime time.Time) (claudeSummary, error) {
 	if err != nil {
 		return sum, err
 	}
-	var asst []string // newest first
-	firstUser := ""   // earliest seen so far; title fallback when the file has no aiTitle
-	done := func() bool { return sum.Title != "" && sum.LastUser != "" && len(asst) >= 2 }
+	var asst []string // newest first, each cut to 1500 runes
+	lastReply := ""   // newest assistant text uncut, so cleanText sees whole code fences
+	lastUser := ""
+	firstUser := "" // earliest seen so far; title fallback when the file has no aiTitle
+	done := func() bool { return sum.Title != "" && lastUser != "" && len(asst) >= 2 }
 	process := func(line []byte) {
 		var r transcriptRow
 		if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &r) != nil {
@@ -316,13 +350,16 @@ func summarize(path string, mtime time.Time) (claudeSummary, error) {
 		switch r.Type {
 		case "user":
 			if t := rowText(r.Message.Content); !r.IsMeta && t != "" && !strings.HasPrefix(t, "<") {
-				if sum.LastUser == "" {
-					sum.LastUser = truncRunes(t, 500)
+				if lastUser == "" {
+					lastUser = t
 				}
 				firstUser = t
 			}
 		case "assistant":
 			if t := rowText(r.Message.Content); t != "" && len(asst) < 2 {
+				if len(asst) == 0 {
+					lastReply = t
+				}
 				asst = append(asst, truncRunes(t, 1500))
 			}
 		}
@@ -347,8 +384,10 @@ func summarize(path string, mtime time.Time) (claudeSummary, error) {
 	if sum.Title == "" {
 		sum.Title = truncRunes(firstUser, 60)
 	}
+	sum.Asked = truncRunes(strings.Join(strings.Fields(lastUser), " "), 80)
+	sum.Reply = truncRunes(cleanText(lastReply), 400)
 	for i := len(asst) - 1; i >= 0; i-- {
-		sum.ClaudeRecent = append(sum.ClaudeRecent, asst[i])
+		sum.Detail = append(sum.Detail, asst[i])
 	}
 	return sum, nil
 }

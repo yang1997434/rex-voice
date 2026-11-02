@@ -1,0 +1,12 @@
+{
+  "blocks": [
+    {
+      "block_id": "block:01a19c00-0000-7000-8000-000000000b01",
+      "label": "gate",
+      "creator_name": "com.superlogical.terminal",
+      "flavor": "com.superlogical.terminal.shell",
+      "placement": "placed",
+      "window_id": "window:01a19c00-0000-7000-8000-000000000w01"
+    }
+  ]
+}

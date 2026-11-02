@@ -25,6 +25,7 @@ const (
 	bShell   = "block:01a19b95-c319-76ed-8bd6-ab787c78ec9b" // plain shell, no program_status records (2026-11-02)
 	wGeoUS   = "window:01a1926c-0d38-7b00-9220-4256b9b2b00d"
 	newBlock = "block:01a19b96-5ef9-7065-b31f-b304826241c8" // from testdata/rex_run.json
+	bJob     = "block:01a19c00-0000-7000-8000-000000000b01" // rex-job pane whose msg is a bash command line
 )
 
 // withShell puts the plain shell pane bShell into the jobs session.
@@ -149,21 +150,27 @@ func wantError(t *testing.T, out, substr string) {
 
 func TestListPanes(t *testing.T) {
 	r, f, _ := setup(t)
+	f.resp["rex block ls -s "+sJobs+" --json"] = "block_ls_rexjob.json"
+	f.resp["rex block call -s "+sJobs+" -b "+bJob+" program_status"] = "program_status_rexjob.json"
 	var ps []pane
 	call(t, r, "list_panes", "", &ps)
-	if len(ps) != 3 {
+	if len(ps) != 4 {
 		t.Fatalf("%d panes: %+v", len(ps), ps)
 	}
 	want := map[string]pane{
 		bGeoUS:   {Session: "rex-voice-dev", Label: "shell", Project: "geo-us", App: "claude-code", State: "done"},
 		bGeoUSCF: {Session: "rex-voice-dev", Label: "shell", Project: "geo-us", App: "claude-code", State: "done"},
 		bVoice:   {Session: "rex-voice-dev", Label: "rex-voice", Project: "rex-voice", App: "claude-code", State: "working"},
+		bJob:     {Session: "jobs", Label: "gate", App: "rex-job", State: "working", Doing: "在跑命令"},
 	}
 	for _, p := range ps {
 		w := want[p.Block]
 		w.Block = p.Block
 		if p.Block == bVoice {
-			w.Doing = "Fetching OpenAI realtime type definitions for delete, truncating, audio formats, turn detection, server events"
+			w.Doing = "Fetching OpenAI realtime type definitions for delete, truncating, audio formats," // cut to 80 runes
+		}
+		if strings.Contains(p.Doing, "bash") {
+			t.Errorf("pane %s doing reads out the command: %q", p.Block, p.Doing)
 		}
 		if p != w {
 			t.Errorf("pane %s = %+v, want %+v", p.Block, p, w)
@@ -173,6 +180,17 @@ func TestListPanes(t *testing.T) {
 	for _, c := range f.calls {
 		if strings.HasPrefix(c, "lsof") && !strings.Contains(c, "41052") {
 			t.Errorf("unexpected %s", c)
+		}
+	}
+}
+
+func TestPaneDoing(t *testing.T) {
+	for _, c := range []struct{ app, state, msg, want string }{
+		{"shell", "idle", "", "空闲"}, {"rex-job", "done", "go test ./...", "空闲"},
+		{"rex-job", "blocked", "read -p name", "等输入"}, {"claude-code", "blocked", "要不要部署？", "要不要部署？"},
+	} {
+		if got := paneDoing(pane{App: c.app, State: c.state, Doing: c.msg}); got != c.want {
+			t.Errorf("%s/%s: %q, want %q", c.app, c.state, got, c.want)
 		}
 	}
 }
@@ -264,17 +282,27 @@ func TestParsePSFilter(t *testing.T) {
 	}
 }
 
-func checkVoiceSummary(t *testing.T, s claudeSummary) {
+func checkVoiceSummary(t *testing.T, s claudeSummary, verbose bool) {
 	t.Helper()
 	if s.Title != "rex-voice-ios-app" {
 		t.Errorf("title %q, want last aiTitle", s.Title)
 	}
 	// The isMeta skill line and the <command-name>/<local-command-stdout> lines come after this one.
-	if !strings.HasPrefix(s.LastUser, "我最近在想一件事情") {
-		t.Errorf("last_user %q", s.LastUser)
+	if !strings.HasPrefix(s.Asked, "我最近在想一件事情") || strings.Contains(s.Asked, "\n") || len([]rune(s.Asked)) > 80 {
+		t.Errorf("asked %q", s.Asked)
 	}
-	if len(s.ClaudeRecent) != 2 || !strings.HasPrefix(s.ClaudeRecent[0], "可行，但 iMessage") || !strings.HasPrefix(s.ClaudeRecent[1], "新会话已经在") {
-		t.Errorf("claude_recent %q", s.ClaudeRecent)
+	// Newest assistant text is "新会话已经在 `rex-voice` 目录里起来了…"; inline code is not read out.
+	if s.Reply != "新会话已经在 代码 目录里起来了，正在给它发开场指令。" {
+		t.Errorf("reply %q", s.Reply)
+	}
+	if !verbose {
+		if s.Detail != nil {
+			t.Errorf("detail without verbose: %q", s.Detail)
+		}
+		return
+	}
+	if len(s.Detail) != 2 || !strings.HasPrefix(s.Detail[0], "可行，但 iMessage") || !strings.HasPrefix(s.Detail[1], "新会话已经在 `rex-voice`") {
+		t.Errorf("detail %q", s.Detail)
 	}
 }
 
@@ -286,10 +314,38 @@ func TestReadClaudeExact(t *testing.T) {
 		if len(got) != 1 {
 			t.Fatalf("%s: %d summaries", args, len(got))
 		}
-		checkVoiceSummary(t, got[0])
+		checkVoiceSummary(t, got[0], false)
 		if got[0].Status != "busy" || got[0].SessionName != "rex-voice-b4" {
 			t.Errorf("%s: status %q name %q", args, got[0].Status, got[0].SessionName)
 		}
+	}
+}
+
+func TestReadClaudeVerboseKeepsDetail(t *testing.T) {
+	r, _, _ := setup(t)
+	var got []claudeSummary
+	out := call(t, r, "read_claude", `{"pid":26673,"verbose":true}`, &got)
+	if len(got) != 1 || !strings.Contains(out, `"detail"`) {
+		t.Fatalf("%s", out)
+	}
+	checkVoiceSummary(t, got[0], true)
+}
+
+func TestCleanText(t *testing.T) {
+	in := "## 结论\n" +
+		"- 门禁**全绿**，改了 `internal/tools/claude.go` 和 /Users/andy/data/claude/rex-voice/docs/protocol.md\n" +
+		"* 配置在 ~/.claude/settings.json，详情见 https://example.com/a/b?x=1 。\n" +
+		"```go\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n```\n" +
+		"| 项 | 结果 |\n|---|---|\n| gofmt | ok |\n" +
+		"---\n" +
+		"可以用 /model 换模型，rex-voice 不受影响。"
+	want := "结论 门禁全绿，改了 代码 和 某文件 配置在 某文件，详情见 链接 。 可以用 /model 换模型，rex-voice 不受影响。"
+	if got := cleanText(in); got != want {
+		t.Errorf("cleanText =\n%q\nwant\n%q", got, want)
+	}
+	// An unclosed fence (reply cut mid-block) drops everything after it.
+	if got := cleanText("先看这个：\n```\nrm -rf build"); got != "先看这个：" {
+		t.Errorf("unclosed fence: %q", got)
 	}
 }
 
@@ -318,7 +374,7 @@ func TestReadClaudeFallbackByMtime(t *testing.T) {
 		t.Errorf("not newest first: %s, %s", got[0].LastActive, got[1].LastActive)
 	}
 	for _, s := range got {
-		checkVoiceSummary(t, s)
+		checkVoiceSummary(t, s, false)
 		if s.Status != "idle" { // no sessions json; Rex says done
 			t.Errorf("status %q", s.Status)
 		}
@@ -361,7 +417,7 @@ func TestSummarizeChunkBoundaries(t *testing.T) {
 			t.Errorf("chunk %d: %s\nwant %s", n, g, w)
 		}
 	}
-	checkVoiceSummary(t, whole)
+	checkVoiceSummary(t, whole, true)
 }
 
 var forbiddenExamples = []string{
