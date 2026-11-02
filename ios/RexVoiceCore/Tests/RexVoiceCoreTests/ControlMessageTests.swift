@@ -15,6 +15,10 @@ import Testing
         (.interrupt, #"{"t":"interrupt"}"#),
         (.hangUp(reason: "idle"), #"{"t":"hang_up","reason":"idle"}"#),
         (.error(msg: "换手机要重新 pair"), #"{"t":"error","msg":"换手机要重新 pair"}"#),
+        (.attach(id: 7, name: "shot.jpg", mime: "image/jpeg", size: 120_000, chunks: 3),
+         #"{"t":"attach","id":7,"name":"shot.jpg","mime":"image/jpeg","size":120000,"chunks":3}"#),
+        (.link(url: "https://example.com/pull/1", title: "PR #1"),
+         #"{"t":"link","url":"https://example.com/pull/1","title":"PR #1"}"#),
     ]
 
     static func object(_ json: Data) throws -> NSDictionary {

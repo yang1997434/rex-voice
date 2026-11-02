@@ -2,6 +2,8 @@ import AVFAudio
 import Foundation
 import Observation
 import RexVoiceCore
+import UIKit
+import UserNotifications
 
 /// Ties RelayClient + AudioEngine to what the screen shows.
 @MainActor
@@ -20,6 +22,15 @@ final class CallController {
     /// Mac's `status.state` during a call: connecting / listening / thinking / speaking.
     private(set) var callState = ""
     private(set) var transcript: [Line] = []
+
+    /// An image or link the Mac sent; kept in memory only, newest last.
+    struct Attachment: Identifiable {
+        enum Kind { case image(UIImage, name: String), link(URL, title: String) }
+        let id = UUID()
+        let kind: Kind
+    }
+    /// Last 5, cleared when a call starts.
+    private(set) var attachments: [Attachment] = []
 
     enum PreviewState: Equatable { case idle, connecting, playing, failed(String) }
     /// Voice sample from the settings page: the Mac runs a short session, audio comes as type 0 frames.
@@ -51,6 +62,18 @@ final class CallController {
     @ObservationIgnored private var deviceID = ""
     /// 25 s fallback while a sample runs, then the 3 s clear of `failed`.
     @ObservationIgnored private var previewTimer: Task<Void, Never>?
+    /// 5 s cap on playing out the goodbye after `hang_up`.
+    @ObservationIgnored private var hangUpTimer: Task<Void, Never>?
+    @ObservationIgnored private var pushToken: String?
+    /// Images being received: `attach` control first, then its type 4 chunks; dropped after 20 s.
+    private struct PendingAttach {
+        let name: String
+        let size: Int
+        let chunks: Int
+        var parts: [Int: Data] = [:]
+        let timeout: Task<Void, Never>
+    }
+    @ObservationIgnored private var pending: [Int: PendingAttach] = [:]
 
     private static let thresholdKey = "energyThreshold"
     private static let pairingAccount = "pairing"
@@ -67,6 +90,7 @@ final class CallController {
             if let data = try Keychain.get(Self.pairingAccount),
                let text = String(data: data, encoding: .utf8), let url = URL(string: text) {
                 try connect(Pairing.parse(url))
+                enablePush() // no prompt if already answered; also refreshes the token every launch
             }
         } catch {
             notice = error.localizedDescription
@@ -137,6 +161,24 @@ final class CallController {
         endCall(notice: nil)
         transcript = []
         try connect(p)
+        enablePush()
+    }
+
+    /// Asks for alert + sound once, then registers; the token comes back through AppDelegate -> `setPushToken`.
+    private func enablePush() {
+        Task {
+            do {
+                _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+            } catch {
+                notice = "通知权限请求失败：\(error.localizedDescription)"
+            }
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+    }
+
+    func setPushToken(_ token: String) {
+        pushToken = token
+        if let relay { Task { await relay.setPushToken(token) } }
     }
 
     func toggleCall() async {
@@ -173,11 +215,14 @@ final class CallController {
         inCall = true
         callState = "connecting"
         transcript = []
+        attachments = []
         startMessage = start
         await relay.send(start)
     }
 
     private func endCall(notice: String?) {
+        hangUpTimer?.cancel()
+        hangUpTimer = nil
         uplinkTask?.cancel()
         uplinkTask = nil
         audio.stop()
@@ -200,7 +245,11 @@ final class CallController {
         eventsTask = Task { [weak self] in
             for await e in client.events { self?.handle(e) }
         }
-        Task { await client.start() }
+        let token = pushToken
+        Task {
+            if let token { await client.setPushToken(token) }
+            await client.start()
+        }
     }
 
     private func handle(_ event: RelayClient.Event) {
@@ -220,7 +269,45 @@ final class CallController {
             if inCall || previewActive { audio.play(pcm) }
         case let .control(m):
             onControl(m)
+        case let .attachChunk(id, index, data):
+            onChunk(id: id, index: index, data: data)
         }
+    }
+
+    private func addAttachment(_ kind: Attachment.Kind) {
+        attachments = Array((attachments + [Attachment(kind: kind)]).suffix(5))
+    }
+
+    private func onAttach(id: Int, name: String, size: Int, chunks: Int) {
+        // 64 KiB frames: 512 chunks is ~32 MiB, far above any screenshot; anything bigger is a bad header.
+        guard (1...512).contains(chunks), size > 0 else {
+            notice = "图片 \(name) 的分片信息不对，已丢弃"
+            return
+        }
+        pending[id]?.timeout.cancel()
+        let timeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled, let self, self.pending.removeValue(forKey: id) != nil else { return }
+            self.notice = "图片 \(name) 没收全，已丢弃"
+        }
+        pending[id] = PendingAttach(name: name, size: size, chunks: chunks, timeout: timeout)
+    }
+
+    private func onChunk(id: Int, index: Int, data: Data) {
+        guard var p = pending[id], index < p.chunks else { return } // late, unknown or out of range
+        p.parts[index] = data
+        guard p.parts.count == p.chunks else {
+            pending[id] = p
+            return
+        }
+        pending[id] = nil
+        p.timeout.cancel()
+        let whole = (0..<p.chunks).reduce(into: Data()) { $0.append(p.parts[$1]!) }
+        guard whole.count == p.size, let image = UIImage(data: whole) else {
+            notice = "图片 \(p.name) 打不开，已丢弃"
+            return
+        }
+        addAttachment(.image(image, name: p.name))
     }
 
     private func onControl(_ m: ControlMessage) {
@@ -238,7 +325,15 @@ final class CallController {
             case "error": "通话出错，已挂断"
             default: "已挂断（\(reason)）"
             }
-            endCall(notice: text)
+            startMessage = nil // the Mac ended it: a reconnect during the drain must not restart the call
+            // Play out the goodbye first; whichever of drain / 5 s comes first ends the call (endCall cancels both).
+            hangUpTimer?.cancel()
+            hangUpTimer = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                self?.endCall(notice: text)
+            }
+            audio.whenDrained { [weak self] in self?.endCall(notice: text) }
         case let .error(msg):
             notice = "Mac：\(msg)"
         case let .preview(state, msg):
@@ -257,6 +352,15 @@ final class CallController {
             case "error": endPreview(.failed(msg ?? "试听失败"))
             default: break
             }
+        case let .attach(id, name, _, size, chunks):
+            onAttach(id: id, name: name, size: size, chunks: chunks)
+        case let .link(url, title):
+            // Opened in Safari: web links only, never app or tel: schemes.
+            guard let u = URL(string: url), ["http", "https"].contains(u.scheme?.lowercased()) else {
+                notice = "Mac 发来的链接不是网页，已忽略"
+                break
+            }
+            addAttachment(.link(u, title: title.isEmpty ? (u.host() ?? url) : title))
         case .hello, .callStart, .callEnd, .voicePreview, .unknown:
             break
         }
@@ -362,6 +466,56 @@ extension CallController {
 
         await runPreview { false }
         check(previewState == .failed("Mac 没收到") && !audio.isRunning, "send failure -> failed")
+
+        print(failures.isEmpty ? "[selftest] PASS" : "[selftest] FAIL: \(failures.joined(separator: "; "))")
+    }
+
+    /// `REXVOICE_SELFTEST=call`: hang-up plays out the queue, image chunks assemble, a missing chunk times out,
+    /// links are kept. Real AudioEngine (playback only), no relay. Leaves the attachments on screen for a screenshot.
+    func callSelfTest() async {
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) { if !ok { failures.append(what) } }
+        func wait(_ seconds: Double, until done: () -> Bool) async {
+            let end = Date().addingTimeInterval(seconds)
+            while !done(), Date() < end { try? await Task.sleep(for: .milliseconds(50)) }
+        }
+        let silence = Data(count: 960) // 20 ms
+
+        // hang_up: the call stays up until the 1 s queue has played, then ends exactly once.
+        try? audio.startPlayback()
+        inCall = true
+        for _ in 0..<50 { handle(.audio(silence)) }
+        handle(.control(.hangUp(reason: "user")))
+        check(inCall, "hang_up waits for the queue")
+        await wait(3) { !inCall }
+        check(!inCall && notice == "已挂断" && !audio.isRunning, "hang_up ends after drain")
+        notice = nil
+        try? await Task.sleep(for: .seconds(5.5))
+        check(notice == nil, "5 s fallback did not fire a second time")
+
+        // Image: three chunks out of order -> one attachment.
+        let jpeg = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 100)).jpegData(withCompressionQuality: 0.8) {
+            UIColor.systemTeal.setFill(); $0.fill(CGRect(x: 0, y: 0, width: 160, height: 100))
+            UIColor.systemOrange.setFill(); $0.fill(CGRect(x: 20, y: 20, width: 60, height: 60))
+        }
+        let third = jpeg.count / 3
+        let parts = [jpeg.prefix(third), jpeg.dropFirst(third).prefix(third), jpeg.dropFirst(2 * third)].map { Data($0) }
+        handle(.control(.attach(id: 1, name: "shot.jpg", mime: "image/jpeg", size: jpeg.count, chunks: 3)))
+        for i in [2, 0, 1] { handle(.attachChunk(id: 1, index: i, data: parts[i])) }
+        check(attachments.count == 1 && pending.isEmpty, "chunks assemble into one image")
+        if case .image(_, "shot.jpg")? = attachments.first?.kind {} else { check(false, "attachment is the image") }
+
+        // Link: web kept, other schemes refused.
+        handle(.control(.link(url: "https://example.com/pull/12", title: "PR #12 修好挂断")))
+        handle(.control(.link(url: "tel:123", title: "x")))
+        check(attachments.count == 2, "https link kept, tel: refused")
+
+        // Missing chunk: dropped after 20 s with a notice, nothing added.
+        handle(.control(.attach(id: 2, name: "half.jpg", mime: "image/jpeg", size: jpeg.count, chunks: 3)))
+        handle(.attachChunk(id: 2, index: 0, data: parts[0]))
+        check(pending[2] != nil, "partial image pending")
+        await wait(21) { pending.isEmpty }
+        check(pending.isEmpty && attachments.count == 2 && notice == "图片 half.jpg 没收全，已丢弃", "missing chunk times out")
 
         print(failures.isEmpty ? "[selftest] PASS" : "[selftest] FAIL: \(failures.joined(separator: "; "))")
     }

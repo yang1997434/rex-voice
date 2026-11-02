@@ -11,6 +11,8 @@ actor RelayClient {
         case ready
         case control(ControlMessage)
         case audio(Data)
+        /// One type 4 chunk of the image announced by `attach` with the same `id`.
+        case attachChunk(id: Int, index: Int, data: Data)
         case failed(String)
     }
 
@@ -23,6 +25,8 @@ actor RelayClient {
     private var ws: URLSessionWebSocketTask?
     private var runner: Task<Void, Never>?
     private var watchdog: Task<Void, Never>?
+    /// APNs token, resent on every new WebSocket so the relay can push to this phone.
+    private var pushToken: String?
     private let session = URLSession(configuration: .default)
 
     init(pairing: Pairing, userAgent: String, hello: ControlMessage) {
@@ -61,6 +65,27 @@ actor RelayClient {
     @discardableResult
     func sendAudio(_ pcm: Data) -> Bool { seal(.audio, pcm) }
 
+    /// Plaintext WebSocket text frame for the relay itself (not end-to-end encrypted). False when not connected.
+    @discardableResult
+    func sendText(_ text: String) -> Bool {
+        guard let task = ws else { return false }
+        task.send(.string(text)) { error in
+            if error != nil { task.cancel(with: .goingAway, reason: nil) }
+        }
+        return true
+    }
+
+    /// Remembers the token for later connections and sends it now if connected.
+    func setPushToken(_ token: String) {
+        pushToken = token
+        sendPushToken()
+    }
+
+    private func sendPushToken() {
+        guard let pushToken, let json = try? JSONEncoder().encode(["t": "push_token", "token": pushToken]) else { return }
+        sendText(String(decoding: json, as: UTF8.self))
+    }
+
     // MARK: - connection loop
 
     private func run() async {
@@ -82,6 +107,7 @@ actor RelayClient {
         ws = task
         task.resume()
         write(hs.connected(), on: task)
+        sendPushToken()
         let keepalive = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
@@ -159,7 +185,7 @@ actor RelayClient {
             watchdog?.cancel()
             send(hello)
             emit.yield(.ready)
-        case .audio, .control:
+        case .audio, .control, .attach:
             guard let rx = hs.rx else { return } // before the salt exchange: drop
             let opened: (type: FrameType, seq: UInt32, plain: Data)
             do {
@@ -171,10 +197,16 @@ actor RelayClient {
             } catch {
                 return // failed authentication: drop, like the Mac side
             }
-            if opened.type == .audio {
-                emit.yield(.audio(opened.plain))
-            } else if let m = try? JSONDecoder().decode(ControlMessage.self, from: opened.plain) {
-                emit.yield(.control(m))
+            let p = Data(opened.plain) // rebase so indices start at 0
+            switch opened.type {
+            case .audio:
+                emit.yield(.audio(p))
+            case .attach:
+                guard p.count >= 8 else { return }
+                func be32(_ at: Int) -> Int { Int(p[at..<at + 4].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }) }
+                emit.yield(.attachChunk(id: be32(0), index: be32(4), data: Data(p[8...])))
+            default:
+                if let m = try? JSONDecoder().decode(ControlMessage.self, from: p) { emit.yield(.control(m)) }
             }
         }
     }

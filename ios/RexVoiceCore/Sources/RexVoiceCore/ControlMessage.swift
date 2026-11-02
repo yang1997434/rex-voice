@@ -19,12 +19,16 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case error(msg: String)
     /// Voice sample progress: connecting / playing / done / error (`msg` set on error).
     case preview(state: String, msg: String?)
+    /// An image follows in `chunks` type 4 frames carrying this `id`; `size` is the whole file in bytes.
+    case attach(id: Int, name: String, mime: String, size: Int, chunks: Int)
+    case link(url: String, title: String)
     /// Any `t` this build does not know; decoding never throws for it.
     case unknown(String)
 
     private enum Key: String, CodingKey {
         case t, app, device, deviceID = "device_id", state, detail, who, text, reason, msg
         case provider, model, voice, apiKey = "api_key"
+        case id, name, mime, size, chunks, url, title
     }
 
     public init(from decoder: any Decoder) throws {
@@ -56,6 +60,12 @@ public enum ControlMessage: Codable, Equatable, Sendable {
         case "error": self = .error(msg: try c.decode(String.self, forKey: .msg))
         case "preview":
             self = .preview(state: try c.decode(String.self, forKey: .state), msg: try c.decodeIfPresent(String.self, forKey: .msg))
+        case "attach":
+            self = .attach(id: try c.decode(Int.self, forKey: .id), name: try c.decode(String.self, forKey: .name),
+                           mime: try c.decode(String.self, forKey: .mime), size: try c.decode(Int.self, forKey: .size),
+                           chunks: try c.decode(Int.self, forKey: .chunks))
+        case "link":
+            self = .link(url: try c.decode(String.self, forKey: .url), title: try c.decode(String.self, forKey: .title))
         default: self = .unknown(t)
         }
     }
@@ -100,6 +110,17 @@ public enum ControlMessage: Codable, Equatable, Sendable {
             try c.encode("preview", forKey: .t)
             try c.encode(state, forKey: .state)
             try c.encodeIfPresent(msg, forKey: .msg)
+        case let .attach(id, name, mime, size, chunks):
+            try c.encode("attach", forKey: .t)
+            try c.encode(id, forKey: .id)
+            try c.encode(name, forKey: .name)
+            try c.encode(mime, forKey: .mime)
+            try c.encode(size, forKey: .size)
+            try c.encode(chunks, forKey: .chunks)
+        case let .link(url, title):
+            try c.encode("link", forKey: .t)
+            try c.encode(url, forKey: .url)
+            try c.encode(title, forKey: .title)
         case let .unknown(t):
             try c.encode(t, forKey: .t)
         }
