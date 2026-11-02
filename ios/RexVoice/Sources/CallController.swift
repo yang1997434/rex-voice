@@ -418,6 +418,16 @@ extension CallController {
             link = .ready; inCall = true; callState = "speaking"
             transcript = talk + [Line(fromUser: false, text: "好，我跟它说先不提交，等你回来再看迁移文件。")]
         }
+        // The side-layout drafts (`REXVOICE_DESIGN`) show where attachments land: one image + one link in a call.
+        if inCall, ProcessInfo.processInfo.environment["REXVOICE_DESIGN"] != nil {
+            let shot = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 100)).image {
+                UIColor.systemTeal.setFill(); $0.fill(CGRect(x: 0, y: 0, width: 160, height: 100))
+                UIColor.systemOrange.setFill(); $0.fill(CGRect(x: 20, y: 20, width: 60, height: 60))
+            }
+            attachments = [Attachment(kind: .image(shot, name: "geo-tests.png")),
+                           Attachment(kind: .link(URL(string: "https://github.com/yang1997434/metis-va/pull/12")!,
+                                                  title: "metis-va PR #12 迁移文件"))]
+        }
         // `REXVOICE_PREVIEW_STATE=connecting|playing|failed` freezes the voice-sample button; `incall` greys it.
         switch ProcessInfo.processInfo.environment["REXVOICE_PREVIEW_STATE"] {
         case "connecting": previewState = .connecting

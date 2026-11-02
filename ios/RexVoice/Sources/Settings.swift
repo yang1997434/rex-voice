@@ -9,14 +9,12 @@ import UIKit
 @MainActor
 @Observable
 final class AppSettings {
-    /// Switching provider puts its model and voice back to that provider's defaults (2026-11-01 user call:
-    /// a fresh install only needs the API key to make a call).
+    /// Each provider keeps its own last model and voice; switching away and back finds them unchanged
+    /// (2026-11-02 user call: 各家各自记住, replacing 11-01's reset-to-defaults on switch).
     var provider: VoiceProvider {
         didSet {
             defaults.set(provider.rawValue, forKey: "provider")
             guard provider != oldValue else { return }
-            defaults.removeObject(forKey: "model.\(provider.rawValue)")
-            defaults.removeObject(forKey: "voice.\(provider.rawValue)")
             revision += 1
         }
     }
@@ -108,6 +106,36 @@ final class AppSettings {
         .voicePreview(provider: provider.rawValue, model: model(for: provider), voice: voice(for: provider),
                       apiKey: try apiKey(for: provider))
     }
+
+    #if DEBUG
+    /// `REXVOICE_SELFTEST=voice`: a voice picked for one provider survives switching to another and back.
+    /// Puts the provider and the stored grok / qwen choices back afterwards; prints `[selftest] PASS` or what failed.
+    func voiceSelfTest() {
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) { if !ok { failures.append(what) } }
+        let keys = ["model.grok", "voice.grok", "model.qwen", "voice.qwen"]
+        let saved = keys.map { defaults.object(forKey: $0) }
+        let savedProvider = provider
+
+        provider = .grok
+        setVoice("eve", for: .grok)
+        provider = .qwen
+        check(voice(for: .grok) == "eve", "grok voice kept while on qwen")
+        provider = .grok
+        check(voice(for: .grok) == "eve", "grok voice still eve after switching back")
+        setVoice("Ryan", for: .qwen)
+        setModel(VoiceProvider.qwen.models[0], for: .qwen) // the qwen-audio-3.1 list has no Ryan
+        check(voice(for: .qwen) == VoiceProvider.qwen.voices(model: VoiceProvider.qwen.models[0])[0].value,
+              "a voice missing from the new model's list goes back to its default")
+
+        for (k, v) in zip(keys, saved) {
+            if let v { defaults.set(v, forKey: k) } else { defaults.removeObject(forKey: k) }
+        }
+        provider = savedProvider
+        revision += 1
+        print(failures.isEmpty ? "[selftest] PASS" : "[selftest] FAIL: \(failures.joined(separator: "; "))")
+    }
+    #endif
 
     // MARK: Persona
 
