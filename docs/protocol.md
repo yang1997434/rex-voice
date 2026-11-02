@@ -64,6 +64,15 @@ Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.
 - 会话上限 120 分钟；`SetMuted` 空操作。
 - 用量：`response.done.usage` 的 `input_tokens`、`output_tokens`、`input_tokens_details.{text_tokens,audio_tokens}`、`output_tokens_details.{text_tokens,audio_tokens}`（注意是 `tokens_details`），按 `internal/voice/qwen/prices.go` 北京价（元/百万 token：文本入 1.5、音频入 6、文本出 4.5、音频出 12，出处 https://help.aliyun.com/zh/model-studio/model-pricing ，按 7.2 折美元）写同格式 usage.log 行，`cached` 恒 0。
 
+### 4.4 xAI Grok Voice（WebSocket，2026-11-01 照官方文档写，还没真跑）
+
+- `wss://api.x.ai/v1/realtime?model=<model>&reasoning.effort=none`（默认 `grok-voice-3.0`；`Extra.reasoning` 改 effort，服务端默认 `high` 拖慢首包；`Extra.url` 覆盖端点），头同 4.1。连上发 `session.update` 等 `session.updated`（10 秒）。事件名同 OpenAI GA，实现在 `internal/voice/grok`（从 openai 包复制改的）。
+- `session.update`：**不带** `type`、不发 `tool_choice`；`instructions`、`voice`（顶层，默认 `Ara`，不分大小写）、`tools`（扁平格式，同 4.1）；语音模式加顶层 `turn_detection {type:"server_vad", idle_timeout_ms:60000}`（不发 semantic_vad / interrupt_response / noise_reduction）、`audio.input.format` 与 `audio.output.format` 都是 `{type:"audio/pcm", rate:24000}`（24k 直通，不重采样）、开转写时 `audio.input.transcription {model:"grok-transcribe", language_hint:"zh"}`；文字模式只加 `output_modalities:["text"]`。
+- 下行同 4.1，另外 `response.text.delta` 与 `response.output_text.delta` 都收（一轮里只认先到的那个名字，防止重复）；`conversation.item.input_audio_transcription.updated` 是累计全文，只存不报，`.completed` 来了以它为准报 `UserText`，没来就在 `response.created` 时把累计全文当 `UserText`（同一 item 只报一次）。
+- 打断：`speech_started` → `SpeechStarted` + `conversation.item.truncate`（同 4.1），不发 `response.cancel`（server VAD 自己取消）。
+- 工具：同 4.1 批处理，但这轮回复出过音频的，`response.create` 要等到它的 `response.output_audio.done`（或用户插话，最多等 10 秒）再发——xAI 说上一条音频没到齐就 create 会叠音；本地播放有没有播完不管。裁剪工具项同 4.1（`conversation.item.delete`）。会话上限 120 分钟，`SetMuted` 空操作。
+- 用量：按连接时长计费（$0.08/分钟，含静音），每条 `SendText` 另加 $0.004，`function_call_output` 免费（`prices.go`）。`response.done` 只报 tokens、`usd` 记 0；`Close`（含拨号失败）时写一行 usage.log：4.1 的字段加 `seconds`，`input` / `output` 是整个会话的 token 合计，其余 0。
+
 
 ## 5. 工具（移植自 `~/data/claude/voice-probe/tools.mjs`，已在实验里验证）
 
