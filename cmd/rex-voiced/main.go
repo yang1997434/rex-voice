@@ -91,7 +91,7 @@ func chat(args []string) int {
 
 	hung := make(chan string, 1)
 	reg := &tools.Registry{}
-	for _, t := range withForbidExtra(tools.NewRexTools(tools.Options{Audit: os.Stderr}), c.ForbidExtra, os.Stderr) {
+	for _, t := range tools.NewRexTools(tools.Options{Audit: os.Stderr, ForbidExtra: c.ForbidExtra}) {
 		reg.Register(t)
 	}
 	instr := voice.Build(c.Name, c.ProjectAliases, projectLabels())
@@ -245,42 +245,6 @@ func projectLabels() []string {
 		}
 	}
 	return labels
-}
-
-// withForbidExtra makes send_to_pane also refuse the config.json forbid_extra words (case-insensitive),
-// writing the same audit line as the built-in refusal; the built-in list stays in internal/tools.
-func withForbidExtra(ts []tools.Tool, words []string, audit io.Writer) []tools.Tool {
-	if len(words) == 0 {
-		return ts
-	}
-	if audit == nil {
-		audit = io.Discard
-	}
-	for i, t := range ts {
-		if t.Name != "send_to_pane" {
-			continue
-		}
-		run := t.Run
-		ts[i].Run = func(ctx context.Context, args json.RawMessage) (any, error) {
-			var a struct{ Block, Text string }
-			if json.Unmarshal(args, &a) == nil {
-				low := strings.ToLower(a.Text)
-				for _, w := range words {
-					if w != "" && strings.Contains(low, strings.ToLower(w)) {
-						line, _ := json.Marshal(map[string]string{"time": time.Now().Format(time.RFC3339), "tool": "send_to_pane",
-							"block": a.Block, "text": a.Text, "result": "refused"})
-						res := map[string]string{"refused": "这类指令不能用语音发，请用户回 Mac 手打"}
-						if _, err := audit.Write(append(line, '\n')); err != nil {
-							res["audit_error"] = err.Error()
-						}
-						return res, nil
-					}
-				}
-			}
-			return run(ctx, args) // malformed args: the original reports the error
-		}
-	}
-	return ts
 }
 
 // rexLabels lists Rex session labels for the prompt; failure only warns.

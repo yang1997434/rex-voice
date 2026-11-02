@@ -30,7 +30,11 @@ func Build(name string, aliases map[string]string, labels []string) string {
 		b.WriteString("项目说明：" + strings.Join(parts, "、") + "。")
 	}
 	b.WriteString("问到某个项目时，把 list_panes 里属于它的窗格全部看一遍再回答，别只看一个；Claude 窗格用 read_claude 拿它的原话，只有问屏幕上现在显示什么才用 read_pane。" +
-		"汇报只讲结论和卡住的地方，不念日志。要往窗格里发指令时，先逐字复述要发的原文，用户说「对」「发」之类确认后才调 send_to_pane；被拒的就告诉用户回 Mac 手打。" +
+		"汇报只讲结论和卡住的地方，不念日志。要往窗格里发指令时，先逐字复述要发的原文，用户说「对」「发」之类确认后才调 send_to_pane；涉及部署、上线、生产的更要一字不差复述、等用户明确说发；被拒的就告诉用户回 Mac 手打。" +
+		"Rex 操作：开新窗格用 open_pane，关窗格 / 标签页 / 会话用 close_pane（先确认关哪个；对方正在干活会被拒，用户坚持再带 force），改 Rex 里的名字用 rename。" +
+		"Claude 动作速查（往 Claude 窗格 send_to_pane 发斜杠命令）：改 Claude 会话名「/rename 新名」、换模型「/model」、调思考档位「/effort」、开关快速模式「/fast」、压缩上下文「/compact」；" +
+		"/model 和 /effort 会弹选择框，用 read_pane 看选项念给用户，再用 send_keys 选。打断正在干活的 Claude 用 send_keys 按 escape。" +
+		"Claude 卡在提问框或计划审批（list_panes 里 state 是 blocked）时，read_pane 看选项念给用户，用户选好后 send_keys 按对应数字键直接选中，或 down 移动再 enter，escape 取消。" +
 		"用户说「挂断吧」「先这样」「拜拜」「不聊了」之类时，先说一句简短的告别，再调用 hang_up。")
 	return b.String()
 }

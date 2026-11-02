@@ -18,9 +18,11 @@ import (
 
 type Options struct {
 	// Exec runs an external command (rex, ps, lsof) and returns stdout; on failure the error text is its stderr.
-	Exec  func(ctx context.Context, name string, args ...string) ([]byte, error)
-	Home  string    // default os.UserHomeDir
-	Audit io.Writer // one JSON line per send_to_pane attempt; default discard
+	Exec        func(ctx context.Context, name string, args ...string) ([]byte, error)
+	Home        string    // default os.UserHomeDir
+	Workspace   string    // where open_pane resolves project names; default <Home>/data/claude
+	Audit       io.Writer // one JSON line per send_to_pane / send_keys / close_pane attempt; default discard
+	ForbidExtra []string  // more words send_to_pane refuses for non-Claude panes (config.json forbid_extra)
 }
 
 func runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -42,7 +44,8 @@ type env struct {
 	auditMu sync.Mutex
 }
 
-// NewRexTools returns list_panes, read_pane, list_claude, read_claude and send_to_pane.
+// NewRexTools returns list_panes, read_pane, list_claude, read_claude, send_to_pane
+// and the control group (open_pane, close_pane, rename, send_keys).
 func NewRexTools(opts Options) []Tool {
 	if opts.Exec == nil {
 		opts.Exec = runCmd
@@ -57,8 +60,11 @@ func NewRexTools(opts Options) []Tool {
 	if opts.Audit == nil {
 		opts.Audit = io.Discard
 	}
+	if opts.Workspace == "" {
+		opts.Workspace = filepath.Join(opts.Home, "data", "claude")
+	}
 	e := &env{Options: opts}
-	return []Tool{
+	return append([]Tool{
 		{
 			Name:        "list_panes",
 			Description: "列出 Mac 上所有 Rex 终端窗格，以及每个窗格里程序报的状态（working / blocked / idle / done）、它正在做什么、属于哪个项目。",
@@ -85,11 +91,11 @@ func NewRexTools(opts Options) []Tool {
 		},
 		{
 			Name:        "send_to_pane",
-			Description: "把一句话打进某个窗格并回车（比如给 Claude 下一条指令）。调用前必须先把要发的原文逐字复述给用户、得到明确同意。涉及部署、上线、生产、删除的一律不发，让用户回 Mac 手打。",
+			Description: "把一句话打进某个窗格并回车（比如给 Claude 下一条指令、斜杠命令）。调用前必须先把要发的原文逐字复述给用户、得到明确同意。发往 shell 窗格的破坏性命令（部署、上线、生产、删除之类）会被拒，让用户回 Mac 手打；发往 Claude 的部署指令要先逐字复述、用户确认后才发。",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"text":{"type":"string"}},"required":["block","text"],"additionalProperties":false}`),
 			Run:         e.sendToPane,
 		},
-	}
+	}, e.controlTools()...)
 }
 
 var noParams = json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
@@ -111,8 +117,9 @@ type rexSession struct {
 }
 
 type rexBlock struct {
-	ID    string `json:"block_id"`
-	Label string `json:"label"`
+	ID     string `json:"block_id"`
+	Label  string `json:"label"`
+	Window string `json:"window_id"`
 }
 
 func (e *env) sessions(ctx context.Context) ([]rexSession, error) {
@@ -292,12 +299,14 @@ func (e *env) sendToPane(ctx context.Context, args json.RawMessage) (any, error)
 	if strings.TrimSpace(a.Text) == "" {
 		return nil, errors.New("text 是空的")
 	}
-	if forbidden.MatchString(a.Text) {
-		return e.audit(map[string]string{"refused": refusedMsg}, a.Block, a.Text, "refused"), nil
-	}
 	sid, err := e.sessionOf(ctx, a.Block)
 	if err != nil {
 		return nil, err
+	}
+	// Claude panes pass: deploy instructions to Claude are gated by the prompt's read-back-and-confirm.
+	// A failed status lookup counts as "not Claude", so the gate stays on.
+	if st, err := e.programStatus(ctx, sid, a.Block); (err != nil || st == nil || st.App != "claude-code") && e.forbids(a.Text) {
+		return e.audit(map[string]string{"refused": refusedMsg}, "send_to_pane", a.Block, a.Text, "refused"), nil
 	}
 	// "--" so text starting with "-" is not parsed as a rex flag.
 	if _, err := e.Exec(ctx, "rex", "send", "-s", sid, "-b", a.Block, "--", a.Text); err != nil {
@@ -306,14 +315,28 @@ func (e *env) sendToPane(ctx context.Context, args json.RawMessage) (any, error)
 	if _, err := e.Exec(ctx, "rex", "send-key", "-s", sid, "-b", a.Block, "enter"); err != nil {
 		return nil, err
 	}
-	return e.audit(map[string]string{"sent": a.Text}, a.Block, a.Text, "sent"), nil
+	return e.audit(map[string]string{"sent": a.Text}, "send_to_pane", a.Block, a.Text, "sent"), nil
+}
+
+// forbids checks the built-in list plus Options.ForbidExtra (case-insensitive substrings).
+func (e *env) forbids(text string) bool {
+	if forbidden.MatchString(text) {
+		return true
+	}
+	low := strings.ToLower(text)
+	for _, w := range e.ForbidExtra {
+		if w != "" && strings.Contains(low, strings.ToLower(w)) {
+			return true
+		}
+	}
+	return false
 }
 
 // audit writes one JSON line and returns res, with audit_error added if the write failed
-// (the send already happened, so it is reported rather than turned into a tool error).
-func (e *env) audit(res map[string]string, block, text, result string) map[string]string {
+// (the action already happened, so it is reported rather than turned into a tool error).
+func (e *env) audit(res map[string]string, tool, block, text, result string) map[string]string {
 	line, _ := json.Marshal(map[string]string{
-		"time": time.Now().Format(time.RFC3339), "tool": "send_to_pane", "block": block, "text": text, "result": result,
+		"time": time.Now().Format(time.RFC3339), "tool": tool, "block": block, "text": text, "result": result,
 	})
 	e.auditMu.Lock()
 	defer e.auditMu.Unlock()

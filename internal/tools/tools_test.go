@@ -21,7 +21,28 @@ const (
 	bGeoUSCF = "block:01a19632-9cf6-70cf-be07-cf46bee0ad5f" // pid 41052, no sessions json -> lsof
 	bVoice   = "block:01a19a0e-06a0-70cb-8e2c-311f5704d684" // pid 26673, has sessions json
 	voiceSID = "2267b08d-dd9a-4d76-b08a-c20417adfd9e"
+
+	bShell   = "block:01a19b95-c319-76ed-8bd6-ab787c78ec9b" // plain shell, no program_status records (2026-11-02)
+	wGeoUS   = "window:01a1926c-0d38-7b00-9220-4256b9b2b00d"
+	newBlock = "block:01a19b96-5ef9-7065-b31f-b304826241c8" // from testdata/rex_run.json
 )
+
+// withShell puts the plain shell pane bShell into the jobs session.
+func withShell(f *fakeExec) {
+	f.resp["rex block ls -s "+sJobs+" --json"] = "block_ls_shell.json"
+	f.resp["rex block call -s "+sJobs+" -b "+bShell+" program_status"] = "program_status_empty.json"
+}
+
+// cmds returns the fake's command lines starting with prefix.
+func (f *fakeExec) cmds(prefix string) []string {
+	var out []string
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, prefix) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 type fakeExec struct {
 	mu    sync.Mutex
@@ -56,8 +77,11 @@ func (f *fakeExec) exec(_ context.Context, name string, args ...string) ([]byte,
 	if msg, ok := f.fail[cmd]; ok {
 		return nil, errors.New(msg)
 	}
-	if strings.HasPrefix(cmd, "rex send") {
-		return nil, nil
+	// Commands that print nothing on success.
+	for _, p := range []string{"rex send", "rex block close ", "rex block rename ", "rex window ", "rex session "} {
+		if strings.HasPrefix(cmd, p) {
+			return nil, nil
+		}
 	}
 	file, ok := f.resp[cmd]
 	if !ok {
@@ -344,8 +368,9 @@ var forbiddenExamples = []string{
 
 func TestSendToPaneRefused(t *testing.T) {
 	r, f, audit := setup(t)
+	withShell(f)
 	for _, text := range forbiddenExamples {
-		args, _ := json.Marshal(map[string]string{"block": bVoice, "text": text})
+		args, _ := json.Marshal(map[string]string{"block": bShell, "text": text})
 		var got map[string]string
 		call(t, r, "send_to_pane", string(args), &got)
 		if got["refused"] != refusedMsg {
@@ -363,9 +388,189 @@ func TestSendToPaneRefused(t *testing.T) {
 	}
 	for i, l := range lines {
 		var a map[string]string
-		if json.Unmarshal([]byte(l), &a) != nil || a["result"] != "refused" || a["text"] != forbiddenExamples[i] || a["block"] != bVoice || a["tool"] != "send_to_pane" || a["time"] == "" {
+		if json.Unmarshal([]byte(l), &a) != nil || a["result"] != "refused" || a["text"] != forbiddenExamples[i] || a["block"] != bShell || a["tool"] != "send_to_pane" || a["time"] == "" {
 			t.Errorf("audit line %d: %s", i, l)
 		}
+	}
+}
+
+// Claude panes skip the forbidden-word gate (built-in and ForbidExtra); shell panes get both.
+func TestSendToPaneClaudeVsShell(t *testing.T) {
+	f := newFake()
+	withShell(f)
+	r := &Registry{}
+	for _, tl := range NewRexTools(Options{Exec: f.exec, Home: t.TempDir(), ForbidExtra: []string{"DROP TABLE"}}) {
+		r.Register(tl)
+	}
+	for _, text := range []string{"部署 geo 到生产", "please drop table users"} {
+		args, _ := json.Marshal(map[string]string{"block": bVoice, "text": text})
+		var got map[string]string
+		if call(t, r, "send_to_pane", string(args), &got); got["sent"] != text {
+			t.Errorf("claude pane %q: %v", text, got)
+		}
+		args, _ = json.Marshal(map[string]string{"block": bShell, "text": text})
+		got = nil
+		if call(t, r, "send_to_pane", string(args), &got); got["refused"] != refusedMsg {
+			t.Errorf("shell pane %q: %v", text, got)
+		}
+	}
+	if s := f.cmds("rex send -s " + sJobs); len(s) != 0 {
+		t.Errorf("sent to shell: %v", s)
+	}
+	if s := f.cmds("rex send -s " + sDev); len(s) != 2 {
+		t.Errorf("claude sends: %v", s)
+	}
+}
+
+func setupWorkspace(t *testing.T) (*Registry, *fakeExec, *bytes.Buffer, string) {
+	t.Helper()
+	f, audit, home := newFake(), &bytes.Buffer{}, t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "data", "claude", "geo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(home, "data", "claude", "notes.txt"), nil, 0o644)
+	r := &Registry{}
+	for _, tl := range NewRexTools(Options{Exec: f.exec, Home: home, Audit: audit}) {
+		r.Register(tl)
+	}
+	return r, f, audit, home
+}
+
+func TestOpenPane(t *testing.T) {
+	r, f, _, home := setupWorkspace(t)
+	geo := filepath.Join(home, "data", "claude", "geo")
+	claudeCmd := "rex run -s geo us -c " + geo + " --label fix-login --focus=false --json -- claude --dangerously-skip-permissions -n fix-login"
+	shellCmd := "rex run -s " + sDev + " -c " + geo + " --label geo --focus=false --json --keep-open -- zsh -l"
+	f.resp[claudeCmd], f.resp[shellCmd] = "rex_run.json", "rex_run.json"
+
+	var got map[string]string
+	call(t, r, "open_pane", `{"session":"geo us","project":"geo","name":"fix-login"}`, &got)
+	if got["block"] != newBlock || got["session"] != "geo us" {
+		t.Errorf("claude: %v", got)
+	}
+	call(t, r, "open_pane", `{"session":"`+sDev+`","project":"`+geo+`","kind":"shell"}`, &got)
+	if got["block"] != newBlock {
+		t.Errorf("shell: %v", got)
+	}
+	if runs := f.cmds("rex run"); strings.Join(runs, "\n") != claudeCmd+"\n"+shellCmd {
+		t.Errorf("commands:\n%s", strings.Join(runs, "\n"))
+	}
+}
+
+func TestOpenPaneRejected(t *testing.T) {
+	r, f, _, home := setupWorkspace(t)
+	wantError(t, call(t, r, "open_pane", `{"session":"x","project":"nope"}`, nil), "不是目录")
+	wantError(t, call(t, r, "open_pane", `{"session":"x","project":"notes.txt"}`, nil), "不是目录")
+	wantError(t, call(t, r, "open_pane", `{"session":"x","project":"../../.."}`, nil), "不在")
+	wantError(t, call(t, r, "open_pane", `{"session":"x","project":"/etc"}`, nil), "不在")
+	wantError(t, call(t, r, "open_pane", `{"session":"x","project":"geo","kind":"vim"}`, nil), "kind")
+	f.fail["rex run -s nosuch -c "+filepath.Join(home, "data", "claude", "geo")+" --label geo --focus=false --json -- claude --dangerously-skip-permissions"] = "session target \"nosuch\" not found"
+	wantError(t, call(t, r, "open_pane", `{"session":"nosuch","project":"geo"}`, nil), "not found")
+	if runs := f.cmds("rex run"); len(runs) != 1 {
+		t.Errorf("rex run called for invalid input: %v", runs)
+	}
+}
+
+func TestClosePane(t *testing.T) {
+	r, f, audit := setup(t)
+	var got map[string]string
+	call(t, r, "close_pane", `{"block":"`+bGeoUS+`"}`, &got) // done: closes
+	if got["closed"] != bGeoUS {
+		t.Errorf("pane: %v", got)
+	}
+	call(t, r, "close_pane", `{"block":"`+bGeoUS+`","scope":"window"}`, &got) // bVoice is in another window
+	if got["closed"] != wGeoUS {
+		t.Errorf("window: %v", got)
+	}
+	call(t, r, "close_pane", `{"block":"`+bGeoUS+`","scope":"session","force":true}`, &got)
+	if got["closed"] != sDev {
+		t.Errorf("session force: %v", got)
+	}
+	want := []string{"rex block close -s " + sDev + " " + bGeoUS, "rex window close -s " + sDev + " " + wGeoUS, "rex session kill " + sDev}
+	if c := append(f.cmds("rex block close"), append(f.cmds("rex window"), f.cmds("rex session")...)...); strings.Join(c, "\n") != strings.Join(want, "\n") {
+		t.Errorf("commands:\n%s", strings.Join(c, "\n"))
+	}
+	if n := strings.Count(audit.String(), `"tool":"close_pane"`); n != 3 || !strings.Contains(audit.String(), `"result":"closed"`) {
+		t.Errorf("audit %s", audit.String())
+	}
+}
+
+func TestClosePaneRefusedWhileWorking(t *testing.T) {
+	r, f, audit := setup(t)
+	var got map[string]string
+	call(t, r, "close_pane", `{"block":"`+bVoice+`"}`, &got)
+	if !strings.HasPrefix(got["refused"], bVoice+" 正在 Fetching OpenAI") || !strings.HasSuffix(got["refused"], "要关请确认 force") {
+		t.Errorf("pane: %v", got)
+	}
+	got = nil
+	call(t, r, "close_pane", `{"block":"`+bGeoUS+`","scope":"session"}`, &got) // bGeoUS is done but bVoice works
+	if !strings.HasPrefix(got["refused"], bVoice) {
+		t.Errorf("session: %v", got)
+	}
+	wantError(t, call(t, r, "close_pane", `{"block":"`+bGeoUS+`","scope":"tab"}`, nil), "scope")
+	if c := append(f.cmds("rex block close"), f.cmds("rex session")...); len(c) != 0 {
+		t.Errorf("closed despite refusal: %v", c)
+	}
+	if !strings.Contains(audit.String(), `"result":"refused"`) {
+		t.Errorf("audit %s", audit.String())
+	}
+}
+
+func TestRename(t *testing.T) {
+	r, f, _ := setup(t)
+	for _, a := range []string{
+		`{"target":"pane","id":"` + bVoice + `","name":"voice"}`,
+		`{"target":"window","id":"` + bGeoUS + `","name":"-geo"}`,
+		`{"target":"session","id":"rex-voice-dev","name":" dev "}`,
+	} {
+		var got map[string]string
+		if call(t, r, "rename", a, &got); got["renamed"] == "" {
+			t.Errorf("%s: %v", a, got)
+		}
+	}
+	want := []string{
+		"rex block rename -s " + sDev + " -- " + bVoice + " voice",
+		"rex window rename -s " + sDev + " -- " + wGeoUS + " -geo",
+		"rex session rename -- rex-voice-dev dev",
+	}
+	if c := append(f.cmds("rex block rename"), append(f.cmds("rex window"), f.cmds("rex session")...)...); strings.Join(c, "\n") != strings.Join(want, "\n") {
+		t.Errorf("commands:\n%s", strings.Join(c, "\n"))
+	}
+}
+
+func TestRenameRejected(t *testing.T) {
+	r, f, _ := setup(t)
+	wantError(t, call(t, r, "rename", `{"target":"pane","id":"`+bVoice+`","name":"  "}`, nil), "name 是空的")
+	wantError(t, call(t, r, "rename", `{"target":"tab","id":"`+bVoice+`","name":"x"}`, nil), "target")
+	wantError(t, call(t, r, "rename", `{"target":"pane","id":"block:nope","name":"x"}`, nil), "没有这个窗格")
+	if c := append(f.cmds("rex block rename"), f.cmds("rex session")...); len(c) != 0 {
+		t.Errorf("renamed: %v", c)
+	}
+}
+
+func TestSendKeys(t *testing.T) {
+	r, f, audit := setup(t)
+	var got map[string]string
+	call(t, r, "send_keys", `{"block":"`+bVoice+`","keys":["Down","enter","2","shift+tab"]}`, &got)
+	if got["sent"] != "down enter 2 shift+tab" {
+		t.Errorf("got %v", got)
+	}
+	if c := f.cmds("rex send-key"); len(c) != 1 || c[0] != "rex send-key -s "+sDev+" -b "+bVoice+" down enter 2 shift+tab" {
+		t.Errorf("commands %v", c)
+	}
+	var a map[string]string
+	if json.Unmarshal(audit.Bytes(), &a) != nil || a["tool"] != "send_keys" || a["text"] != "down enter 2 shift+tab" || a["result"] != "sent" {
+		t.Errorf("audit %s", audit.String())
+	}
+}
+
+func TestSendKeysRejected(t *testing.T) {
+	r, f, _ := setup(t)
+	wantError(t, call(t, r, "send_keys", `{"block":"`+bVoice+`","keys":["down","y"]}`, nil), `不支持的键 "y"`)
+	wantError(t, call(t, r, "send_keys", `{"block":"`+bVoice+`","keys":["ctrl+d"]}`, nil), "不支持的键")
+	wantError(t, call(t, r, "send_keys", `{"block":"`+bVoice+`","keys":[]}`, nil), "keys 是空的")
+	if c := f.cmds("rex send-key"); len(c) != 0 {
+		t.Errorf("sent despite rejection: %v", c)
 	}
 }
 

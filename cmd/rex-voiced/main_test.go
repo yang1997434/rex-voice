@@ -1,19 +1,13 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"encoding/xml"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/yang1997434/rex-voice/internal/tools"
 )
 
 func TestPlist(t *testing.T) {
@@ -62,22 +56,5 @@ func TestRexDir(t *testing.T) {
 	}
 	if got, _ := rexDir(home, func(string) (string, error) { return "/opt/bin/rex", nil }); got != "/opt/bin" {
 		t.Fatalf("PATH = %q", got)
-	}
-}
-
-func TestForbidExtra(t *testing.T) {
-	ran := 0
-	ts := []tools.Tool{{Name: "send_to_pane", Run: func(context.Context, json.RawMessage) (any, error) { ran++; return "sent", nil }}}
-	var audit bytes.Buffer
-	run := withForbidExtra(ts, []string{"DROP TABLE"}, &audit)[0].Run
-	res, _ := run(context.Background(), json.RawMessage(`{"block":"b1","text":"please drop table users"}`))
-	if m, ok := res.(map[string]string); !ok || m["refused"] == "" || ran != 0 || !strings.Contains(audit.String(), `"result":"refused"`) {
-		t.Fatalf("res=%v ran=%d audit=%s", res, ran, audit.String())
-	}
-	if res, _ := run(context.Background(), json.RawMessage(`{"block":"b1","text":"ls"}`)); res != "sent" || ran != 1 {
-		t.Fatalf("allowed text: res=%v ran=%d", res, ran)
-	}
-	if got := withForbidExtra(ts, nil, io.Discard); &got[0] != &ts[0] {
-		t.Fatal("no words should leave tools untouched")
 	}
 }

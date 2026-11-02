@@ -69,7 +69,7 @@ func serve(args []string) int {
 
 	audit := logFile("audit.log")
 	reg := &tools.Registry{}
-	for _, t := range withForbidExtra(tools.NewRexTools(tools.Options{Audit: audit}), c.ForbidExtra, audit) {
+	for _, t := range tools.NewRexTools(tools.Options{Audit: audit, ForbidExtra: c.ForbidExtra}) {
 		reg.Register(t)
 	}
 	cfg := call.Config{
