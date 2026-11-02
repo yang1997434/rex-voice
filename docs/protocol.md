@@ -8,12 +8,17 @@
 
 ## 2. 中继
 
-- `GET /_voice/ws?role=mac|phone&id=<id>`，升级成 WebSocket。中继按 `id` 配对两端：一端连上等另一端，都在就双向透传二进制帧；任一端断，另一端收到 `present:false`、连接保持。同一 `id` 同一 role 只允许一条连接，新连顶掉旧连（旧连被关，对端不收 `present:false`）。`role` 只能是 `mac` / `phone`，`id` 只许 `[A-Za-z0-9_-]{8,64}`，否则 400 不升级；不校验 `Origin`。单帧上限 64 KiB，超了断那条连接；中继每次写有 10 s 超时，写不出去就关那一端。客户端发来的文本帧中继忽略。
+- `GET /_voice/ws?role=mac|phone&id=<id>`，升级成 WebSocket。中继按 `id` 配对两端：一端连上等另一端，都在就双向透传二进制帧；任一端断，另一端收到 `present:false`、连接保持。同一 `id` 同一 role 只允许一条连接，新连顶掉旧连（旧连被关，对端不收 `present:false`）。`role` 只能是 `mac` / `phone`，`id` 只许 `[A-Za-z0-9_-]{8,64}`，否则 400 不升级；不校验 `Origin`。单帧上限 64 KiB，超了断那条连接；中继每次写有 10 s 超时，写不出去就关那一端。客户端发来的文本帧除下面「推送」两种外中继忽略。
 - 中继不解密、不存。`GET /_voice/healthz` → `ok`。
-- **Mac→中继文本帧 `notify`**（2026-11-02）：没有通话时，Mac 发现某个 Claude 窗格变成 `blocked`，就往中继发一个**明文文本帧** `{"t":"notify","title":"<项目> 的 Claude 在等你","body":"<问题前 100 字>"}`，由中继转成 APNs 推送（中继侧另做；现在的中继照上面「客户端文本帧忽略」丢掉它）。因为走明文，正文只放项目名和问题前 100 字，不放全文、不放 key。同一窗格 10 分钟内最多一条；窗格离开 `blocked` 前不重复触发；Mac 没连上中继时这条直接丢、记日志。监视只在 Mac（每 5 秒查一次 Rex，`internal/tools/watch.go`），手机不轮询。
-- 两端之间只走**二进制帧**（第 3 节的加密帧）；中继自己只发**文本帧**，内容 `{"t":"peer","present":true|false}`，对端上线 / 掉线时发给另一端，连上时也立即发一次当前状态。没有对端时收到的二进制帧直接丢。
+- **Mac→中继文本帧 `notify`**（2026-11-02）：没有通话时，Mac 发现某个 Claude 窗格变成 `blocked`，就往中继发一个**明文文本帧** `{"t":"notify","title":"<项目> 的 Claude 在等你","body":"<问题前 100 字>"}`，由中继转成 APNs 推送（中继侧见下面「推送」）。因为走明文，正文只放项目名和问题前 100 字，不放全文、不放 key。同一窗格 10 分钟内最多一条；窗格离开 `blocked` 前不重复触发；Mac 没连上中继时这条直接丢、记日志。监视只在 Mac（每 5 秒查一次 Rex，`internal/tools/watch.go`），手机不轮询。
+- 两端之间只走**二进制帧**（第 3 节的加密帧）；中继自己发给客户端的只有**文本帧**，内容 `{"t":"peer","present":true|false}`，对端上线 / 掉线时发给另一端，连上时也立即发一次当前状态。没有对端时收到的二进制帧直接丢。
 - 保活：每端空闲时每 30 秒发一个**明文** `type 3` 帧 `[03][00000000]`（没有对端时中继丢掉，有对端时对端忽略），用来刷新 nginx `proxy_send_timeout` 并尽早发现死连接；中继→客户端方向没有保活，nginx `proxy_read_timeout 3600s` 到了会断，客户端按 1s→30s 退避重连即可（通话中双向都有音频，不会触发）。
 - r.maruiao.top 的 server 块对空 UA 和 `go-http` / `curl` 等 UA 一律 403，WebSocket 客户端和健康检查都要带自定义 `User-Agent`（`rex-voiced/<版本>`、`RexVoice-iOS/<版本>`，健康检查 `curl -A rex-voice-check`）。
+- 推送（APNs，Mac 不在通话时手机也能收到提醒）：客户端发给中继的文本帧只认两种，其余照旧忽略，JSON 坏的忽略并记日志，都不断连接。
+  - 手机→中继 `{"t":"push_token","token":"<hex>"}`：每次连上发一次；token 只许 32–200 位十六进制，否则丢。中继按 `id` 存在**内存**里（重启即丢，手机下次连上重发），手机断开后保留，同 `id` 新 token 覆盖旧的。mac 端发的忽略。
+  - Mac→中继 `{"t":"notify","title":string,"body":string}`：中继查这个 `id` 的 token，没有 token 或没配 APNs 就记日志丢弃；有就异步推一条（10 s 超时），成败只记日志、不回帖给 Mac。手机端发的忽略。
+  - APNs：`POST https://api.push.apple.com/3/device/<token>`，头 `authorization: bearer <JWT>`、`apns-topic: com.maruiao.rexvoice`、`apns-push-type: alert`、`apns-priority: 10`，体 `{"aps":{"alert":{"title","body"},"sound":"default"}}`。JWT 用 .p8（PKCS#8 P-256）ES256 签，头 `alg/kid`、载荷 `iss`（team）+ `iat`，缓存 50 分钟换一次。非 200 时错误里带状态码和 `reason`。
+  - 中继环境变量：`APNS_KEY_PATH`、`APNS_KEY_ID`、`APNS_TEAM_ID`（`KAA6GJ59XS`）三个缺一个就不推、启动 warn 一行；key 读不出也只 warn、中继照常跑；`APNS_URL` 可选，覆盖 APNs 地址（测试用）。生产放 `/etc/rex-voice/relay.env`（unit 里 `EnvironmentFile=-`），.p8 的放法见 `scripts/deploy-relay.sh` 注释。
 - nginx：`location /_voice/` 反代到 `127.0.0.1:8790`，`proxy_http_version 1.1` + Upgrade 头，`proxy_read_timeout`/`proxy_send_timeout 3600s`，`proxy_buffering off`，不套 `limit_req`。
 
 ## 3. 手机 ⇄ Mac 帧（经中继）

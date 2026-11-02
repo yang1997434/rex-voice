@@ -4,6 +4,8 @@ After=network.target
 
 [Service]
 DynamicUser=yes
+# APNS_KEY_PATH / APNS_KEY_ID / APNS_TEAM_ID; missing file = push disabled. See deploy-relay.sh for the .p8.
+EnvironmentFile=-/etc/rex-voice/relay.env
 ExecStart=/opt/rex-voice/rex-voice-relay -listen 127.0.0.1:8790
 Restart=always
 RestartSec=2

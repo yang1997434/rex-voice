@@ -20,7 +20,21 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8790", "listen address")
 	flag.Parse()
 
-	srv := &http.Server{Addr: *listen, Handler: relay.NewHub(), ReadHeaderTimeout: 10 * time.Second}
+	hub := relay.NewHub()
+	keyPath, keyID, teamID := os.Getenv("APNS_KEY_PATH"), os.Getenv("APNS_KEY_ID"), os.Getenv("APNS_TEAM_ID")
+	if keyPath == "" || keyID == "" || teamID == "" {
+		log.Print("warn: APNS_KEY_PATH / APNS_KEY_ID / APNS_TEAM_ID not all set, push disabled")
+	} else {
+		// a bad key only disables push; the relay itself must stay up for calls
+		if n, err := relay.NewAPNS(keyPath, keyID, teamID, os.Getenv("APNS_URL")); err != nil {
+			log.Printf("warn: apns disabled: %v", err)
+		} else {
+			hub.Notifier = n
+			log.Printf("apns push enabled key=%s team=%s", keyID, teamID)
+		}
+	}
+
+	srv := &http.Server{Addr: *listen, Handler: hub, ReadHeaderTimeout: 10 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 

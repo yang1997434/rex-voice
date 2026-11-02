@@ -2,6 +2,20 @@
 # 要用户明文授权「部署 rex-voice 中继」才能跑。nginx 片段不在本脚本里，改 nginx 由主会话手动做、先备份。
 set -euo pipefail
 
+# APNs 推送配置（本脚本不碰，首次在 ccs-maruiao 上手动放，root 所有、0600）：
+#   /etc/rex-voice/relay.env   三行 APNS_KEY_PATH=... APNS_KEY_ID=... APNS_TEAM_ID=KAA6GJ59XS；文件不在中继照常跑、只是不推。
+#                              EnvironmentFile 由 systemd 以 root 读，0600 没问题。
+#   /etc/rex-voice/AuthKey.p8  ASC 下载的 APNs key。DynamicUser 每次启动分配临时 UID，没法把文件 chown 给它，
+#                              0600 root 的文件服务读不到；用 LoadCredential 让 systemd 以 root 读、拷到
+#                              /run/credentials/rex-voice-relay.service/ 只给本服务读：
+#     systemctl edit rex-voice-relay   # 写 drop-in，内容两行：
+#       [Service]
+#       LoadCredential=apns.p8:/etc/rex-voice/AuthKey.p8
+#     relay.env 里写 APNS_KEY_PATH=/run/credentials/rex-voice-relay.service/apns.p8
+#     （env 文件里不展开 %d，只能写全路径）。LoadCredential 的源文件不在服务会起不来，所以 .p8 放好之后才加 drop-in。
+# 注意：下面只在服务器上还没有 unit 文件时才拷 scripts/rex-voice-relay.service；已装过的机器要手动拷一次新 unit
+#       （新增了 EnvironmentFile 行）再 daemon-reload，否则 relay.env 不生效。
+
 HOST=ccs-maruiao
 cd "$(dirname "$0")/.."
 
