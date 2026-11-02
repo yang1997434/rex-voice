@@ -1,0 +1,13 @@
+/bin/
+/dist/
+/.build/
+*.log
+*.xcarchive
+DerivedData/
+xcuserdata/
+*.p8
+*.p12
+*.mobileprovision
+.env
+.env.*
+pair-*.json
