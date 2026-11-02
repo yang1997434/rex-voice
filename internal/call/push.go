@@ -42,7 +42,11 @@ func (s *server) onBlocked(b tools.Blocked) {
 	if msg == "" {
 		msg = "（没写问题）"
 	}
-	if c := s.call; c != nil && c.sess != nil {
+	if c := s.call; c != nil {
+		if c.sess == nil { // still dialing: the user is on the phone, a push would only duplicate
+			s.log.Info("claude blocked while dialing, skipped", "block", b.Block, "project", b.Project)
+			return
+		}
 		s.log.Info("claude blocked, telling the call", "block", b.Block, "project", b.Project)
 		if err := c.sess.SendText(fmt.Sprintf(blockedText, b.Project, truncRunes(msg, 200))); err != nil {
 			s.log.Warn("blocked prompt failed", "err", err)

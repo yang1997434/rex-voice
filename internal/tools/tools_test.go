@@ -51,6 +51,9 @@ type fakeExec struct {
 	calls []string
 }
 
+// alive stands in for pidAlive: fixture pids are not real processes.
+var alive = func(int) bool { return true }
+
 func newFake() *fakeExec {
 	ps := func(b string) string { return "rex block call -s " + sDev + " -b " + b + " program_status" }
 	return &fakeExec{
@@ -119,7 +122,7 @@ func setup(t *testing.T) (*Registry, *fakeExec, *bytes.Buffer) {
 	t.Helper()
 	f, audit := newFake(), &bytes.Buffer{}
 	r := &Registry{}
-	for _, tl := range NewRexTools(Options{Exec: f.exec, Home: fixtureHome(t), Audit: audit}) {
+	for _, tl := range NewRexTools(Options{Alive: alive, Exec: f.exec, Home: fixtureHome(t), Audit: audit}) {
 		r.Register(tl)
 	}
 	return r, f, audit
@@ -303,7 +306,7 @@ func TestReadClaudeFallbackByMtime(t *testing.T) {
 		}
 	}
 	reg := &Registry{}
-	for _, tl := range NewRexTools(Options{Exec: f.exec, Home: h}) {
+	for _, tl := range NewRexTools(Options{Alive: alive, Exec: f.exec, Home: h}) {
 		reg.Register(tl)
 	}
 	var got []claudeSummary
@@ -399,7 +402,7 @@ func TestSendToPaneClaudeVsShell(t *testing.T) {
 	f := newFake()
 	withShell(f)
 	r := &Registry{}
-	for _, tl := range NewRexTools(Options{Exec: f.exec, Home: t.TempDir(), ForbidExtra: []string{"DROP TABLE"}}) {
+	for _, tl := range NewRexTools(Options{Alive: alive, Exec: f.exec, Home: t.TempDir(), ForbidExtra: []string{"DROP TABLE"}}) {
 		r.Register(tl)
 	}
 	for _, text := range []string{"部署 geo 到生产", "please drop table users"} {
@@ -424,13 +427,14 @@ func TestSendToPaneClaudeVsShell(t *testing.T) {
 
 func setupWorkspace(t *testing.T) (*Registry, *fakeExec, *bytes.Buffer, string) {
 	t.Helper()
-	f, audit, home := newFake(), &bytes.Buffer{}, t.TempDir()
+	f, audit := newFake(), &bytes.Buffer{}
+	home, _ := filepath.EvalSymlinks(t.TempDir()) // open_pane reports real paths (/var -> /private/var on macOS)
 	if err := os.MkdirAll(filepath.Join(home, "data", "claude", "geo"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(home, "data", "claude", "notes.txt"), nil, 0o644)
 	r := &Registry{}
-	for _, tl := range NewRexTools(Options{Exec: f.exec, Home: home, Audit: audit}) {
+	for _, tl := range NewRexTools(Options{Alive: alive, Exec: f.exec, Home: home, Audit: audit}) {
 		r.Register(tl)
 	}
 	return r, f, audit, home
@@ -619,5 +623,70 @@ func TestRegistryCall(t *testing.T) {
 	defs, _ := json.Marshal(r.Defs())
 	if !strings.HasPrefix(string(defs), `[{"type":"function","name":"hang_up","description":"挂断`) {
 		t.Errorf("defs %s", defs)
+	}
+}
+
+// A pane whose Claude has exited keeps app=claude-code in Rex; it is a shell again and must be gated.
+func TestSendToPaneDeadClaudeIsShell(t *testing.T) {
+	f, audit := newFake(), &bytes.Buffer{}
+	r := &Registry{}
+	for _, tl := range NewRexTools(Options{Alive: func(int) bool { return false }, Exec: f.exec, Home: fixtureHome(t), Audit: audit}) {
+		r.Register(tl)
+	}
+	var got map[string]string
+	call(t, r, "send_to_pane", `{"block":"`+bVoice+`","text":"部署 geo 到生产"}`, &got)
+	if got["refused"] != refusedMsg || len(f.cmds("rex send")) != 0 {
+		t.Errorf("dead claude pane: %v %v", got, f.cmds("rex send"))
+	}
+	got = nil
+	call(t, r, "send_to_pane", `{"block":"`+bVoice+`","text":"ls"}`, &got) // harmless text still goes through
+	if got["sent"] != "ls" {
+		t.Errorf("plain text: %v", got)
+	}
+}
+
+func TestSendKeysShellOnlyInterrupt(t *testing.T) {
+	r, f, _ := setup(t)
+	withShell(f)
+	wantError(t, call(t, r, "send_keys", `{"block":"`+bShell+`","keys":["enter"]}`, nil), "不是 Claude 窗格")
+	if c := f.cmds("rex send-key"); len(c) != 0 {
+		t.Errorf("sent to shell: %v", c)
+	}
+	var got map[string]string
+	call(t, r, "send_keys", `{"block":"`+bShell+`","keys":["ctrl+c"]}`, &got)
+	if got["sent"] != "ctrl+c" || len(f.cmds("rex send-key -s "+sJobs+" -b "+bShell+" ctrl+c")) != 1 {
+		t.Errorf("ctrl+c: %v %v", got, f.cmds("rex send-key"))
+	}
+}
+
+func TestClosePaneRefusedWhenStatusFails(t *testing.T) {
+	r, f, _ := setup(t)
+	f.fail["rex block call -s "+sDev+" -b "+bGeoUS+" program_status"] = "rex: timeout"
+	var got map[string]string
+	call(t, r, "close_pane", `{"block":"`+bGeoUS+`"}`, &got)
+	if !strings.Contains(got["refused"], "查不到状态") || len(f.cmds("rex block close")) != 0 {
+		t.Errorf("got %v, closes %v", got, f.cmds("rex block close"))
+	}
+}
+
+func TestOpenPaneSymlinks(t *testing.T) {
+	r, f, _, home := setupWorkspace(t)
+	geo := filepath.Join(home, "data", "claude", "geo")
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(home, "data", "claude", "evil")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "data"), filepath.Join(home, "datalink")); err != nil {
+		t.Fatal(err)
+	}
+	wantError(t, call(t, r, "open_pane", `{"session":"`+sDev+`","project":"evil"}`, nil), "不在")
+	// A link that stays inside Home resolves to the real directory (like /data -> ~/data on this Mac).
+	real, _ := filepath.EvalSymlinks(geo)
+	cmd := "rex run -s " + sDev + " -c " + real + " --label geo --focus=false --json -- claude --dangerously-skip-permissions"
+	f.resp[cmd] = "rex_run.json"
+	var got map[string]string
+	call(t, r, "open_pane", `{"session":"`+sDev+`","project":"`+filepath.Join(home, "datalink", "claude", "geo")+`"}`, &got)
+	if got["block"] != newBlock {
+		t.Errorf("via link: %v, runs %v", got, f.cmds("rex run"))
 	}
 }

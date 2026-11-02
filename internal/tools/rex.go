@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -23,6 +24,14 @@ type Options struct {
 	Workspace   string    // where open_pane resolves project names; default <Home>/data/claude
 	Audit       io.Writer // one JSON line per send_to_pane / send_keys / close_pane attempt; default discard
 	ForbidExtra []string  // more words send_to_pane refuses for non-Claude panes (config.json forbid_extra)
+	// Alive reports whether a pid is still running; default sends signal 0. A pane whose Claude has exited
+	// may keep its claude-code status in Rex, and must then be treated as a shell again.
+	Alive func(pid int) bool
+}
+
+func pidAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	return err == nil && p.Signal(syscall.Signal(0)) == nil
 }
 
 func runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -59,6 +68,9 @@ func NewRexTools(opts Options) []Tool {
 	}
 	if opts.Audit == nil {
 		opts.Audit = io.Discard
+	}
+	if opts.Alive == nil {
+		opts.Alive = pidAlive
 	}
 	if opts.Workspace == "" {
 		opts.Workspace = filepath.Join(opts.Home, "data", "claude")
@@ -304,8 +316,7 @@ func (e *env) sendToPane(ctx context.Context, args json.RawMessage) (any, error)
 		return nil, err
 	}
 	// Claude panes pass: deploy instructions to Claude are gated by the prompt's read-back-and-confirm.
-	// A failed status lookup counts as "not Claude", so the gate stays on.
-	if st, err := e.programStatus(ctx, sid, a.Block); (err != nil || st == nil || st.App != "claude-code") && e.forbids(a.Text) {
+	if !e.isClaudePane(ctx, sid, a.Block) && e.forbids(a.Text) {
 		return e.audit(map[string]string{"refused": refusedMsg}, "send_to_pane", a.Block, a.Text, "refused"), nil
 	}
 	// "--" so text starting with "-" is not parsed as a rex flag.
@@ -330,6 +341,13 @@ func (e *env) forbids(text string) bool {
 		}
 	}
 	return false
+}
+
+// isClaudePane is true only for a pane whose reporting program is a Claude Code that is still running:
+// a failed status lookup, no record, or a dead owner pid all count as "not Claude", so gates stay on.
+func (e *env) isClaudePane(ctx context.Context, sid, block string) bool {
+	st, err := e.programStatus(ctx, sid, block)
+	return err == nil && st != nil && st.App == "claude-code" && st.Owner.Pid > 0 && e.Alive(st.Owner.Pid)
 }
 
 // audit writes one JSON line and returns res, with audit_error added if the write failed

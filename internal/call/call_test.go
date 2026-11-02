@@ -53,10 +53,12 @@ type aiConn struct {
 }
 
 type fakeAI struct {
-	srv   *httptest.Server
-	conns chan *aiConn
+	holdUpdated atomic.Bool
+	srv         *httptest.Server
+	conns       chan *aiConn
 }
 
+// holdUpdated keeps the Mac dialing: session.updated is then pushed by the test, not auto-replied.
 func newFakeAI(t *testing.T) *fakeAI {
 	f := &fakeAI{conns: make(chan *aiConn, 4)}
 	f.srv = httptest.NewServer(websocket.Handler(func(ws *websocket.Conn) {
@@ -70,7 +72,7 @@ func newFakeAI(t *testing.T) *fakeAI {
 			}
 			var ev map[string]any
 			json.Unmarshal([]byte(raw), &ev)
-			if ev["type"] == "session.update" {
+			if ev["type"] == "session.update" && !f.holdUpdated.Load() {
 				websocket.Message.Send(ws, `{"type":"session.updated"}`)
 			}
 			c.got <- ev
@@ -566,10 +568,10 @@ func TestBlockedClaudeToldInCall(t *testing.T) {
 }
 
 // Outside a call the Mac sends the relay a notify text frame, at most one per pane per notifyEvery.
-func TestBlockedClaudeNotifiesRelayOutsideCall(t *testing.T) {
-	set(t, &keepaliveEvery, 20*time.Millisecond)
+// recordingRelay is a fake relay that only records what the Mac writes: text frames in full, binary as ticks.
+func recordingRelay() (http.Handler, chan string, chan struct{}) {
 	texts, bins := make(chan string, 10), make(chan struct{}, 100)
-	h := websocket.Handler(func(ws *websocket.Conn) { // fake relay: only records what the Mac writes
+	h := websocket.Handler(func(ws *websocket.Conn) {
 		for {
 			var f wsFrame
 			if frameCodec.Receive(ws, &f) != nil {
@@ -585,6 +587,12 @@ func TestBlockedClaudeNotifiesRelayOutsideCall(t *testing.T) {
 			}
 		}
 	})
+	return h, texts, bins
+}
+
+func TestBlockedClaudeNotifiesRelayOutsideCall(t *testing.T) {
+	set(t, &keepaliveEvery, 20*time.Millisecond)
+	h, texts, bins := recordingRelay()
 	var blocked atomic.Bool
 	startWith(t, false, "", h, withWatch(t, &blocked))
 	select { // a keepalive means the Mac holds the connection
@@ -922,4 +930,46 @@ func TestRetryAfterUpgradeFailure(t *testing.T) {
 	if n := macTries.Load(); n < 3 {
 		t.Fatalf("mac tries = %d", n)
 	}
+}
+
+// pushRecorder stands in for APNs behind the relay: it records every push the Mac's notify causes.
+type pushRecorder struct{ pushes chan string }
+
+func (r *pushRecorder) Push(_ context.Context, _, title, _ string) error {
+	r.pushes <- title
+	return nil
+}
+
+// While the call is still dialing the provider there is no session to tell, and the user is already on
+// the phone: the event is dropped (no push, nothing replayed once the session is up).
+func TestBlockedClaudeWhileDialingNotPushed(t *testing.T) {
+	var blocked atomic.Bool
+	hub, rec := relay.NewHub(), &pushRecorder{pushes: make(chan string, 4)}
+	hub.Notifier = rec
+	e := startWith(t, false, "", hub, withWatch(t, &blocked))
+	e.ai.holdUpdated.Store(true)
+	ph := e.ready(t)
+	if err := websocket.Message.Send(ph.ws, `{"t":"push_token","token":"`+strings.Repeat("ab", 32)+`"}`); err != nil {
+		t.Fatal(err)
+	}
+	ph.ctl(t, map[string]any{"t": "call.start"})
+	ai := e.ai.accept(t)
+	ai.next(t, "session.update") // the Mac now waits for session.updated: sess == nil
+	blocked.Store(true)
+	time.Sleep(5 * watchEvery)
+	ai.push(t, `{"type":"session.updated"}`)
+	ph.expectStatus(t, "connecting", "listening")
+	select {
+	case title := <-rec.pushes:
+		t.Fatalf("pushed while dialing: %q", title)
+	case ev := <-ai.got:
+		if ev["type"] == "conversation.item.create" {
+			t.Fatalf("blocked event replayed after dial: %v", ev)
+		}
+	case <-time.After(5 * watchEvery):
+	}
+	blocked.Store(false) // the watcher itself still works once in the call
+	time.Sleep(3 * watchEvery)
+	blocked.Store(true)
+	ai.next(t, "conversation.item.create")
 }

@@ -111,11 +111,19 @@ func (e *env) projectDir(project string) (string, error) {
 		p = filepath.Join(base, p)
 	}
 	p = filepath.Clean(p)
+	fi, err := os.Stat(p)
+	if err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("不是目录: %s", p)
+	}
+	// Compare real paths: /data is a symlink to ~/data on this Mac, and a symlink inside Home must not lead outside it.
+	if r, err := filepath.EvalSymlinks(base); err == nil {
+		base = r
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		p = r
+	}
 	if rel, err := filepath.Rel(base, p); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("项目目录不在 %s 下: %s", base, project)
-	}
-	if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("不是目录: %s", p)
 	}
 	return p, nil
 }
@@ -169,7 +177,12 @@ func (e *env) closePane(ctx context.Context, args json.RawMessage) (any, error) 
 	if !a.Force {
 		for _, b := range targets {
 			// A pane with no reporting program (plain shell) has no status: nothing to protect.
-			if st, err := e.programStatus(ctx, sid, b.ID); err == nil && st != nil && st.State == "working" {
+			// A lookup that fails (rex timeout) is not "no status": refuse rather than close a working Claude blind.
+			st, err := e.programStatus(ctx, sid, b.ID)
+			if err != nil {
+				return e.audit(map[string]string{"refused": fmt.Sprintf("%s 查不到状态（%s），没敢关", b.ID, truncRunes(err.Error(), 80))}, "close_pane", a.Block, a.Scope, "refused"), nil
+			}
+			if st != nil && st.State == "working" {
 				doing := st.Msg
 				if doing == "" {
 					doing = "干活"
@@ -256,6 +269,14 @@ func (e *env) sendKeys(ctx context.Context, args json.RawMessage) (any, error) {
 	sid, err := e.sessionOf(ctx, a.Block)
 	if err != nil {
 		return nil, err
+	}
+	// In a shell, enter would run whatever is sitting on the command line, bypassing send_to_pane's gate.
+	if !e.isClaudePane(ctx, sid, a.Block) {
+		for _, k := range a.Keys {
+			if k != "ctrl+c" && k != "escape" {
+				return nil, fmt.Errorf("不是 Claude 窗格，只能发 ctrl+c / escape，不能发 %q", k)
+			}
+		}
 	}
 	if _, err := e.Exec(ctx, "rex", append([]string{"send-key", "-s", sid, "-b", a.Block}, a.Keys...)...); err != nil {
 		return nil, err

@@ -113,6 +113,9 @@ func expandHome(p, home string) (string, error) {
 		return "", errors.New("缺少 path")
 	}
 	if p != "~" && !strings.HasPrefix(p, "~/") {
+		if !filepath.IsAbs(p) { // a relative name like -x.png would reach sips as an option
+			return "", errors.New("path 要是绝对路径或 ~ 开头: " + p)
+		}
 		return p, nil
 	}
 	if home == "" {

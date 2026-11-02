@@ -78,6 +78,14 @@ func (h *Hub) serve(c *conn) {
 	c.ws.MaxPayloadBytes = MaxFrameBytes
 	short := c.id[:6]
 
+	// The first thing a client reads must be its peer notice: send it before publishing c in the map,
+	// or the peer's forwarded frames could arrive ahead of it. A peer that connects in between is caught
+	// by the re-lookup after publishing (both sides then get a fresh notice; duplicates are harmless).
+	h.mu.Lock()
+	first := h.conns[key(c.id, other(c.role))]
+	h.mu.Unlock()
+	h.sendPeer(c, first != nil)
+
 	h.mu.Lock()
 	old := h.conns[key(c.id, c.role)]
 	h.conns[key(c.id, c.role)] = c
@@ -88,9 +96,11 @@ func (h *Hub) serve(c *conn) {
 	if old != nil {
 		kill(old.ws)
 	}
-	h.notify(c)
 	if peer != nil {
 		h.notify(peer)
+		if peer != first {
+			h.notify(c) // the peer arrived after c's first notice
+		}
 	}
 
 	reason := h.pump(c)
@@ -181,11 +191,13 @@ func (h *Hub) control(c *conn, data []byte) {
 }
 
 // notify tells c whether its peer is currently connected.
-func (h *Hub) notify(c *conn) {
+func (h *Hub) notify(c *conn) { h.sendPeer(c, h.peerOf(c) != nil) }
+
+func (h *Hub) sendPeer(c *conn, present bool) {
 	c.statusMu.Lock()
 	defer c.statusMu.Unlock()
 	msg := `{"t":"peer","present":false}`
-	if h.peerOf(c) != nil {
+	if present {
 		msg = `{"t":"peer","present":true}`
 	}
 	h.send(c, msg)

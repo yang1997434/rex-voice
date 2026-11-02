@@ -35,6 +35,8 @@ func TestShowFileValidation(t *testing.T) {
 		"~/huge.png":             "超过 2 MB",
 		"~/missing.png":          "找不到文件",
 		filepath.Join(home, "x"): "只能发",
+		"-x.png":                 "绝对路径",
+		"a.png":                  "绝对路径",
 	} {
 		if got := r.Call(context.Background(), "show_file", `{"path":"`+path+`"}`); !strings.Contains(got, want) {
 			t.Errorf("show_file %s = %s, want %s", path, got, want)
