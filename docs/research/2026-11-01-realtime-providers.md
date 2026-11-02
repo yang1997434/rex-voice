@@ -63,3 +63,4 @@
 - usage 只有 `input_tokens / output_tokens / total_tokens`，无音频文本拆分。**计费 $0.08/分钟（含模型），开 server_vad 时按连接时长计、静音也算**；每条客户端 `conversation.item.create`（文本）另 $0.004，`function_call_output` 免费。并发 10/team（档位 T0–T4 为 10/20/50/100/200）。区域 us-east-1。
 - 音色：文档点到 `eve`（默认）、`ara`、`rex`，发布文 Ara/Eve/Leo，完整表要 `GET /v1/tts/voices`；不分大小写，每个音色会所有语言；`zh` 在语言表。
 - 坑：默认 `reasoning.effort=high` 可能拖慢首包，实测 `none`；重放事件名 created/added 两说。
+- 2026-11-01 真跑结论（XAI key）：旧 session.update（无 `type`、voice 顶层、扁平 tools、无 tool_choice）服务端全收；文字 + 工具 + 语音三轮通；`GET /v1/tts/voices` 返回 28 个 `multilingual` 音色：altair、ara、atlas、aurora、carina、castor、celeste、cosmo、eve、helios、helix、iris、kepler、leo、liora、lumen、luna、lux、naksh、orion、perseus、rex、rigel、sal、sirius、ursa、zagan、zenith（女声如 ara/aurora/carina/celeste/eve/iris/liora/luna；男声如 altair/atlas/castor/leo/orion/rex）。
