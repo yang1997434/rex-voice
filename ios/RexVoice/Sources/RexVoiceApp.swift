@@ -13,6 +13,7 @@ struct RexVoiceApp: App {
         let c = CallController(settings: s)
         #if DEBUG
         if let screen = PreviewScreen.current { c.applyPreview(screen) }
+        if ProcessInfo.processInfo.environment["REXVOICE_SELFTEST"] == "preview" { Task { await c.previewSelfTest() } }
         #endif
         _settings = State(initialValue: s)
         _controller = State(initialValue: c)

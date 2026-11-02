@@ -55,15 +55,23 @@ struct V2Pill: View {
     let title: String
     var symbol: String?
     var destructive = false
+    /// A small spinner in place of the symbol.
+    var busy = false
     let action: () -> Void
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.isEnabled) private var enabled
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                if let symbol { Image(systemName: symbol) }
+                if busy {
+                    ProgressView().controlSize(.small)
+                } else if let symbol {
+                    Image(systemName: symbol)
+                }
                 Text(title)
             }
+            .opacity(enabled ? 1 : 0.4)
             .font(.subheadline.weight(.medium))
             .foregroundStyle(destructive ? Color.red : .primary)
             .padding(.horizontal, 16)
@@ -236,7 +244,18 @@ struct SettingsPage: View {
                 }
             }
 
-            subhead("音色", trailing: provider.totalVoices.map { "共 \($0) 种，列出常用 \(voices.count) 种" } ?? "\(voices.count) 种")
+            HStack(spacing: 12) {
+                subhead("音色", trailing: provider.totalVoices.map { "共 \($0) 种，列出常用 \(voices.count) 种" } ?? "\(voices.count) 种")
+                previewButton
+            }
+            if case let .failed(reason) = controller.previewState {
+                Text("试听失败：\(reason)")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            } else if controller.inCall {
+                Text("通话中不能试听").font(.footnote).foregroundStyle(.secondary)
+            }
             VStack(spacing: 0) {
                 // Grok's list is grouped by gender (女声 / 男声 / not labelled); the others have no gender data.
                 let groups = Dictionary(grouping: voices) { $0.gender ?? "" }
@@ -264,6 +283,20 @@ struct SettingsPage: View {
                 .id("custom")
             }
         }
+    }
+
+    /// 试听: the Mac speaks one line in the picked voice. Grey mid-call (the voice cannot change then) or with the Mac offline.
+    private var previewButton: some View {
+        let (title, symbol): (String, String?) = switch controller.previewState {
+        case .connecting: ("连接中", nil)
+        case .playing: ("播放中", "waveform")
+        case .idle, .failed: ("试听", "play.fill")
+        }
+        return V2Pill(title: title, symbol: symbol, busy: controller.previewState == .connecting) {
+            Task { await controller.previewVoice() }
+        }
+        .disabled(!controller.canPreview)
+        .accessibilityHint(controller.inCall ? "通话中不能试听" : controller.canPreview ? "听一句当前音色" : "Mac 不在线")
     }
 
     private func customRow(selected: Bool, value: String?, empty: String, action: @escaping () -> Void) -> some View {

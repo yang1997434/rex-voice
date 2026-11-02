@@ -20,6 +20,11 @@ final class CallController {
     /// Mac's `status.state` during a call: connecting / listening / thinking / speaking.
     private(set) var callState = ""
     private(set) var transcript: [Line] = []
+
+    enum PreviewState: Equatable { case idle, connecting, playing, failed(String) }
+    /// Voice sample from the settings page: the Mac runs a short session, audio comes as type 0 frames.
+    /// `failed` goes back to `idle` by itself after 3 s.
+    private(set) var previewState = PreviewState.idle
     /// Latest error or hang-up reason; the screen shows it briefly.
     var notice: String?
     var threshold: Double {
@@ -44,6 +49,8 @@ final class CallController {
     @ObservationIgnored private var eventsTask: Task<Void, Never>?
     @ObservationIgnored private var uplinkTask: Task<Void, Never>?
     @ObservationIgnored private var deviceID = ""
+    /// 25 s fallback while a sample runs, then the 3 s clear of `failed`.
+    @ObservationIgnored private var previewTimer: Task<Void, Never>?
 
     private static let thresholdKey = "energyThreshold"
     private static let pairingAccount = "pairing"
@@ -67,6 +74,58 @@ final class CallController {
     }
 
     var canToggleCall: Bool { inCall || link == .ready }
+    /// Same Mac-online check as「开始通话」; the voice cannot change mid-call, so no sample then.
+    var canPreview: Bool { !inCall && link == .ready }
+    private var previewActive: Bool { previewState == .connecting || previewState == .playing }
+
+    /// Plays a sample of the picked voice. Pressing again while one runs sends a fresh request (the Mac restarts it).
+    func previewVoice() async {
+        guard canPreview, let relay else { return }
+        let msg: ControlMessage
+        do {
+            msg = try settings.voicePreview()
+        } catch {
+            endPreview(.failed(error.localizedDescription))
+            return
+        }
+        await runPreview { await relay.send(msg) }
+    }
+
+    /// Output-only audio up, state to connecting, 25 s fallback armed, then `send`.
+    private func runPreview(send: () async -> Bool) async {
+        if audio.isRunning {
+            audio.flushPlayback() // the previous sample's leftover audio
+        } else {
+            do {
+                try audio.startPlayback()
+            } catch {
+                endPreview(.failed("音频启动失败：\(error.localizedDescription)"))
+                return
+            }
+        }
+        previewState = .connecting
+        previewTimer?.cancel()
+        previewTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(25))
+            guard !Task.isCancelled else { return }
+            self?.endPreview(.failed("超时"))
+        }
+        // A call started while sending already cleared the sample; nothing to report then.
+        if !(await send()), previewActive { endPreview(.failed("Mac 没收到")) }
+    }
+
+    private func endPreview(_ next: PreviewState) {
+        previewTimer?.cancel()
+        previewTimer = nil
+        if !inCall { audio.stop() }
+        previewState = next
+        guard case .failed = next else { return }
+        previewTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self, case .failed = self.previewState else { return }
+            self.previewState = .idle
+        }
+    }
 
     /// A scanned QR payload. Throws (and keeps the old pairing) when it is not a valid `rexvoice://pair` URL.
     func pair(with code: String) throws {
@@ -87,6 +146,8 @@ final class CallController {
             return
         }
         guard link == .ready, let relay else { return }
+        // The Mac cancels the sample on call.start (and answers `preview error 已取消`, ignored below).
+        if previewState != .idle { endPreview(.idle) }
         let start: ControlMessage
         do {
             start = try settings.callStart()
@@ -148,6 +209,7 @@ final class CallController {
             link = .connecting
         case .macOffline:
             link = .macOffline
+            if previewActive { endPreview(.failed("Mac 不在线")) }
         case .ready:
             link = .ready
             // The Mac keeps a call across a phone reconnect; call.start is idempotent there.
@@ -155,7 +217,7 @@ final class CallController {
         case let .failed(message):
             notice = message
         case let .audio(pcm):
-            if inCall { audio.play(pcm) }
+            if inCall || previewActive { audio.play(pcm) }
         case let .control(m):
             onControl(m)
         }
@@ -179,7 +241,23 @@ final class CallController {
             endCall(notice: text)
         case let .error(msg):
             notice = "Mac：\(msg)"
-        case .hello, .callStart, .callEnd, .unknown:
+        case let .preview(state, msg):
+            guard previewActive else { break } // late messages after done / timeout / call.start
+            switch state {
+            case "connecting": previewState = .connecting
+            case "playing": previewState = .playing
+            case "done":
+                previewTimer?.cancel()
+                audio.whenDrained { [weak self] in
+                    guard let self, self.previewActive else { return }
+                    self.endPreview(.idle)
+                }
+            // The Mac cancelled the old sample for a newer request; the newer one reports on its own.
+            case "error" where msg == "已取消": break
+            case "error": endPreview(.failed(msg ?? "试听失败"))
+            default: break
+            }
+        case .hello, .callStart, .callEnd, .voicePreview, .unknown:
             break
         }
     }
@@ -236,6 +314,56 @@ extension CallController {
             link = .ready; inCall = true; callState = "speaking"
             transcript = talk + [Line(fromUser: false, text: "好，我跟它说先不提交，等你回来再看迁移文件。")]
         }
+        // `REXVOICE_PREVIEW_STATE=connecting|playing|failed` freezes the voice-sample button; `incall` greys it.
+        switch ProcessInfo.processInfo.environment["REXVOICE_PREVIEW_STATE"] {
+        case "connecting": previewState = .connecting
+        case "playing": previewState = .playing
+        case "failed": previewState = .failed("Mac：没有这个音色")
+        case "incall": inCall = true; callState = "listening"
+        default: break
+        }
+    }
+
+    /// `REXVOICE_SELFTEST=preview`: drives the voice-sample state machine with fake Mac messages and the real
+    /// AudioEngine (playback only), prints `[selftest] PASS` or the failed checks. No relay involved.
+    func previewSelfTest() async {
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) { if !ok { failures.append(what) } }
+        // 1 kHz sine, 20 ms PCM16 LE 24 kHz frames, 1 s in all.
+        let frame = Data((0..<480).flatMap { i -> [UInt8] in
+            let s = Int16(sin(2 * Double.pi * 1000 * Double(i) / 24_000) * 0.3 * 32767)
+            return withUnsafeBytes(of: s.littleEndian, Array.init)
+        })
+        func waitIdle(_ seconds: Double) async {
+            let end = Date().addingTimeInterval(seconds)
+            while previewState != .idle, Date() < end { try? await Task.sleep(for: .milliseconds(50)) }
+        }
+
+        check(previewState == .idle, "starts idle")
+        await runPreview { true }
+        check(previewState == .connecting && audio.isRunning, "connecting after send, engine up")
+        handle(.control(.preview(state: "connecting", msg: nil)))
+        check(previewState == .connecting, "preview connecting")
+        handle(.control(.preview(state: "playing", msg: nil)))
+        check(previewState == .playing, "preview playing")
+        for _ in 0..<50 { handle(.audio(frame)) }
+        handle(.control(.preview(state: "done", msg: nil)))
+        check(previewState == .playing, "still playing until the queue drains")
+        await waitIdle(3)
+        check(previewState == .idle && !audio.isRunning, "idle and engine off after drain")
+
+        await runPreview { true }
+        handle(.control(.preview(state: "error", msg: "已取消")))
+        check(previewState == .connecting, "已取消 ignored")
+        handle(.control(.preview(state: "error", msg: "没有这个音色")))
+        check(previewState == .failed("没有这个音色") && !audio.isRunning, "error -> failed, engine off")
+        await waitIdle(3.5)
+        check(previewState == .idle, "failed clears after 3 s")
+
+        await runPreview { false }
+        check(previewState == .failed("Mac 没收到") && !audio.isRunning, "send failure -> failed")
+
+        print(failures.isEmpty ? "[selftest] PASS" : "[selftest] FAIL: \(failures.joined(separator: "; "))")
     }
 }
 #endif

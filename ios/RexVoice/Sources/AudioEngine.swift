@@ -33,24 +33,28 @@ final class AudioEngine {
         return min(1, max(0, (20 * log10(rms) + 60) / 60))
     }
 
-    @ObservationIgnored private let engine = AVAudioEngine()
-    @ObservationIgnored private let player = AVAudioPlayerNode()
+    /// A fresh engine per start: a playback-only run must not inherit the call's voice-processing input unit.
+    @ObservationIgnored private var engine = AVAudioEngine()
+    @ObservationIgnored private var player = AVAudioPlayerNode()
     /// The mixer resamples this to the hardware output format.
     @ObservationIgnored private let playFormat = AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1)!
+    /// nil while running playback-only (voice sample): the input node is never touched then.
     @ObservationIgnored private var uplink: Uplink?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var running = false
+    /// Buffers scheduled but not yet played back; `generation` drops completions from before a flush / stop.
+    @ObservationIgnored private var queued = 0
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var onDrained: (() -> Void)?
 
-    init() {
-        engine.attach(player)
-    }
+    /// Whether the engine is up (call or voice sample).
+    var isRunning: Bool { running }
 
     func start(onFrame: @escaping @Sendable (Data) -> Void) throws {
         guard !running else { return }
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .voiceChat,
                                 options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker])
-        try session.setActive(true)
         let up = Uplink(threshold: threshold, onFrame: onFrame, onLevel: { [weak self] rms in
             Task { @MainActor in
                 guard let self, self.running else { return }
@@ -59,6 +63,22 @@ final class AudioEngine {
         }) { [weak self] message in
             Task { @MainActor in self?.onError?(message) }
         }
+        try begin(uplink: up)
+    }
+
+    /// Output only, no microphone: `.playback` goes to the speaker (or headphones), not the earpiece.
+    func startPlayback() throws {
+        guard !running else { return }
+        try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try begin(uplink: nil)
+    }
+
+    private func begin(uplink up: Uplink?) throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setActive(true)
+        engine = AVAudioEngine()
+        player = AVAudioPlayerNode()
+        engine.attach(player)
         uplink = up
         do {
             try startGraph()
@@ -76,11 +96,14 @@ final class AudioEngine {
         running = false
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers = []
-        engine.inputNode.removeTap(onBus: 0)
+        if uplink != nil { engine.inputNode.removeTap(onBus: 0) }
         player.stop()
         engine.stop()
         uplink = nil
         level = 0
+        generation += 1
+        queued = 0
+        onDrained = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -101,23 +124,46 @@ final class AudioEngine {
                 out[i] = Float(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: i * 2, as: Int16.self))) / 32768
             }
         }
-        player.scheduleBuffer(buf, completionHandler: nil)
+        queued += 1
+        let gen = generation
+        player.scheduleBuffer(buf, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor in self?.played(gen) }
+        }
+    }
+
+    /// Calls `f` once everything queued so far has played (right away when nothing is queued).
+    /// Dropped by `stop()` and `flushPlayback()`.
+    func whenDrained(_ f: @escaping () -> Void) {
+        if queued == 0 { f() } else { onDrained = f }
+    }
+
+    private func played(_ gen: Int) {
+        guard gen == generation, queued > 0 else { return }
+        queued -= 1
+        guard queued == 0, let f = onDrained else { return }
+        onDrained = nil
+        f()
     }
 
     /// `interrupt` from the Mac: drop everything queued.
     func flushPlayback() {
         guard running else { return }
+        generation += 1
+        queued = 0
         player.stop()
         if engine.isRunning { player.play() }
+        onDrained = nil
     }
 
     private func startGraph() throws {
-        let input = engine.inputNode
-        // Echo cancellation: without it the model hears itself through the speaker and interrupts itself.
-        if !input.isVoiceProcessingEnabled { try input.setVoiceProcessingEnabled(true) }
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { throw Failure.noInput }
-        try uplink?.install(on: input, format: format)
+        if uplink != nil {
+            let input = engine.inputNode
+            // Echo cancellation: without it the model hears itself through the speaker and interrupts itself.
+            if !input.isVoiceProcessingEnabled { try input.setVoiceProcessingEnabled(true) }
+            let format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else { throw Failure.noInput }
+            try uplink?.install(on: input, format: format)
+        }
         engine.connect(player, to: engine.mainMixerNode, format: playFormat)
         engine.prepare()
         try engine.start()
@@ -127,7 +173,7 @@ final class AudioEngine {
     /// Rebuilds the graph after the system stopped or reconfigured the engine.
     private func restart() {
         guard running else { return }
-        engine.inputNode.removeTap(onBus: 0)
+        if uplink != nil { engine.inputNode.removeTap(onBus: 0) }
         player.stop()
         engine.stop()
         do {

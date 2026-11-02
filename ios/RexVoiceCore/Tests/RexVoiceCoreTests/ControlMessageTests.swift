@@ -43,6 +43,22 @@ import Testing
         #expect(new == .callStart(provider: "grok", model: "grok-voice-3.0", voice: "ara", apiKey: "xai-1"))
     }
 
+    @Test func voicePreviewOmitsNilFields() throws {
+        let full = ControlMessage.voicePreview(provider: "openai", model: "gpt-realtime-2.1", voice: "marin", apiKey: "sk-9")
+        #expect(try Self.object(JSONEncoder().encode(full)) == Self.object(Data(
+            #"{"t":"voice.preview","provider":"openai","model":"gpt-realtime-2.1","voice":"marin","api_key":"sk-9"}"#.utf8)))
+        let bare = ControlMessage.voicePreview(provider: "qwen", model: nil, voice: "Tina", apiKey: nil)
+        #expect(try Self.object(JSONEncoder().encode(bare))
+            == Self.object(Data(#"{"t":"voice.preview","provider":"qwen","voice":"Tina"}"#.utf8)))
+    }
+
+    @Test func previewDecodes() throws {
+        let playing = try JSONDecoder().decode(ControlMessage.self, from: Data(#"{"t":"preview","state":"playing"}"#.utf8))
+        #expect(playing == .preview(state: "playing", msg: nil))
+        let failed = try JSONDecoder().decode(ControlMessage.self, from: Data(#"{"t":"preview","state":"error","msg":"已取消"}"#.utf8))
+        #expect(failed == .preview(state: "error", msg: "已取消"))
+    }
+
     @Test func unknownTypeDoesNotThrow() throws {
         let msg = try JSONDecoder().decode(ControlMessage.self, from: Data(#"{"t":"ping","x":1}"#.utf8))
         #expect(msg == .unknown("ping"))
