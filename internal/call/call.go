@@ -185,7 +185,11 @@ func (s *server) handlers(sid int) voice.Handlers {
 	}
 	transcript := func(who string) func(string) {
 		return func(text string) {
-			on(func(*callState) { s.sendCtl(map[string]any{"t": "transcript", "who": who, "text": text}) })
+			on(func(*callState) {
+				// Kept in the Mac log so "it said it sent but nothing arrived" can be checked against tool calls.
+				s.log.Info("transcript", "who", who, "text", truncRunes(strings.TrimSpace(text), 160))
+				s.sendCtl(map[string]any{"t": "transcript", "who": who, "text": text})
+			})
 		}
 	}
 	return voice.Handlers{
