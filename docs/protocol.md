@@ -26,7 +26,7 @@
 - `type 0` 音频：PCM16 LE 单声道 24 kHz，每帧 20 ms（960 字节明文）。手机→Mac 是麦克风，Mac→手机 是模型输出。
 - `type 1` 控制：JSON。
   - 手机→Mac：`{"t":"hello","app":"<版本>","device":"<机型>","device_id":"<app 首次启动生成的随机 UUID，存 Keychain>"}`（每次连上、盐交换完先发）、`{"t":"call.start"}`、`{"t":"call.end"}`。一次性配对靠 `device_id`：Mac 第一次收到能解密的 hello 时把它记进 `pair.json`，之后 `device_id` 不同的 hello 一律回 `error` 并断开，要换手机重新 `pair`。
-  - Mac→手机：`{"t":"status","state":"connecting|listening|thinking|speaking|ended","detail":"…"}`、`{"t":"transcript","who":"user|assistant","text":"…"}`、`{"t":"interrupt"}`（立即停播、清空播放队列）、`{"t":"hang_up","reason":"user|idle|error"}`、`{"t":"error","msg":"…"}`
+  - Mac→手机：`{"t":"status","state":"connecting|listening|thinking|speaking|ended"}`（`detail` 可选，Mac 目前不发，手机按可选解）、`{"t":"transcript","who":"user|assistant","text":"…"}`、`{"t":"interrupt"}`（立即停播、清空播放队列）、`{"t":"hang_up","reason":"user|idle|error"}`、`{"t":"error","msg":"…"}`
 
 ### 测试向量
 
