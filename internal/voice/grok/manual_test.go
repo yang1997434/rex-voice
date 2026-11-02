@@ -199,8 +199,7 @@ func TestManualAudio(t *testing.T) {
 				}
 			}
 			if err := s.AppendAudio(f); err != nil {
-				t.Error(err)
-				return
+				return // the session is closed once the test is done; the silence goroutine just stops
 			}
 			time.Sleep(20 * time.Millisecond) // real-time pace
 		}

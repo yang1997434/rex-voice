@@ -64,7 +64,7 @@ Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.
 - 会话上限 120 分钟；`SetMuted` 空操作。
 - 用量：`response.done.usage` 的 `input_tokens`、`output_tokens`、`input_tokens_details.{text_tokens,audio_tokens}`、`output_tokens_details.{text_tokens,audio_tokens}`（注意是 `tokens_details`），按 `internal/voice/qwen/prices.go` 北京价（元/百万 token：文本入 1.5、音频入 6、文本出 4.5、音频出 12，出处 https://help.aliyun.com/zh/model-studio/model-pricing ，按 7.2 折美元）写同格式 usage.log 行，`cached` 恒 0。
 
-### 4.4 xAI Grok Voice（WebSocket，2026-11-01 照官方文档写，还没真跑）
+### 4.4 xAI Grok Voice（WebSocket；2026-11-01 真 key 跑通文字 / 工具 / 语音，扁平 tools、不带 type 的 session.update 服务端都收）
 
 - `wss://api.x.ai/v1/realtime?model=<model>&reasoning.effort=none`（默认 `grok-voice-3.0`；`Extra.reasoning` 改 effort，服务端默认 `high` 拖慢首包；`Extra.url` 覆盖端点），头同 4.1。连上发 `session.update` 等 `session.updated`（10 秒）。事件名同 OpenAI GA，实现在 `internal/voice/grok`（从 openai 包复制改的）。
 - `session.update`：**不带** `type`、不发 `tool_choice`；`instructions`、`voice`（顶层，默认 `Ara`，不分大小写）、`tools`（扁平格式，同 4.1）；语音模式加顶层 `turn_detection {type:"server_vad", idle_timeout_ms:60000}`（不发 semantic_vad / interrupt_response / noise_reduction）、`audio.input.format` 与 `audio.output.format` 都是 `{type:"audio/pcm", rate:24000}`（24k 直通，不重采样）、开转写时 `audio.input.transcription {model:"grok-transcribe", language_hint:"zh"}`；文字模式只加 `output_modalities:["text"]`。
