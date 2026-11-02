@@ -189,3 +189,38 @@ final class CallController {
         return withUnsafeBytes(of: &u.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
     }
 }
+
+#if DEBUG
+extension CallController {
+    /// Design previews only (`REXVOICE_PREVIEW`): fake link / call state and transcript, no relay or audio.
+    func applyPreview(_ screen: PreviewScreen) {
+        let talk = [
+            Line(fromUser: true, text: "看一下 geo 那个窗格跑到哪了"),
+            Line(fromUser: false, text: "geo 窗格里 Claude 在跑全量测试，412 条过了 398 条，还没有失败。"),
+            Line(fromUser: true, text: "好。metis 那边呢？"),
+            Line(fromUser: false, text: "metis-va 窗格停在等你确认：它问要不要把迁移文件一起提交。"),
+            Line(fromUser: true, text: "让它先别提交，等我回去看"),
+        ]
+        notice = nil
+        switch screen {
+        case .unpaired:
+            link = .unpaired; inCall = false; transcript = []
+        case .connecting:
+            link = .connecting; inCall = false; transcript = []
+        case .offline:
+            link = .macOffline; inCall = false; transcript = []
+            notice = "Mac 断开了，正在等它重新上线"
+        case .idle, .settings, .pair:
+            link = .ready; inCall = false; transcript = Array(talk.prefix(4))
+            if screen == .idle { notice = "太久没说话，已自动挂断" }
+        case .listening:
+            link = .ready; inCall = true; callState = "listening"; transcript = Array(talk.prefix(4))
+        case .thinking:
+            link = .ready; inCall = true; callState = "thinking"; transcript = talk
+        case .speaking:
+            link = .ready; inCall = true; callState = "speaking"
+            transcript = talk + [Line(fromUser: false, text: "好，我跟它说先不提交，等你回来再看迁移文件。")]
+        }
+    }
+}
+#endif

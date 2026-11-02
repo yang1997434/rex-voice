@@ -115,7 +115,7 @@ struct ContentView: View {
 }
 
 /// Asks for the camera first: DataScannerViewController.isAvailable stays false until access is granted.
-private struct ScannerSheet: View {
+struct ScannerSheet: View {
     let onCode: (String) -> Void
     let onError: (String) -> Void
     @State private var granted: Bool?
