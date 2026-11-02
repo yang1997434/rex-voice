@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct RexVoiceApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var settings: AppSettings
     @State private var controller: CallController
 
@@ -13,7 +14,11 @@ struct RexVoiceApp: App {
         let c = CallController(settings: s)
         #if DEBUG
         if let screen = PreviewScreen.current { c.applyPreview(screen) }
-        if ProcessInfo.processInfo.environment["REXVOICE_SELFTEST"] == "preview" { Task { await c.previewSelfTest() } }
+        switch ProcessInfo.processInfo.environment["REXVOICE_SELFTEST"] {
+        case "preview": Task { await c.previewSelfTest() }
+        case "call": Task { await c.callSelfTest() }
+        default: break
+        }
         #endif
         _settings = State(initialValue: s)
         _controller = State(initialValue: c)
@@ -22,6 +27,7 @@ struct RexVoiceApp: App {
     var body: some Scene {
         WindowGroup {
             root.environment(controller).environment(settings)
+                .task { appDelegate.controller = controller }
         }
     }
 

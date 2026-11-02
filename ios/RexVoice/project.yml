@@ -11,7 +11,7 @@ settings:
     SWIFT_VERSION: "6.0"
     DEVELOPMENT_TEAM: KAA6GJ59XS
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.3.0"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   RexVoice:
@@ -20,6 +20,11 @@ targets:
     sources: [Sources, Assets.xcassets, Resources]
     dependencies:
       - package: RexVoiceCore
+    # xcodegen writes this file from `properties` on every generate.
+    entitlements:
+      path: RexVoice.entitlements
+      properties:
+        aps-environment: production
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maruiao.rexvoice

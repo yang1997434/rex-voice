@@ -13,6 +13,8 @@ struct ContentView: View {
     @State private var callStart: Date?
     /// Provider whose missing key is being asked about before a call.
     @State private var missingKey: VoiceProvider?
+    /// Image attachment shown full screen.
+    @State private var zoomed: CallController.Attachment?
 
     enum Sheet: String, Identifiable {
         case settings, pair
@@ -39,6 +41,7 @@ struct ContentView: View {
                         .layoutPriority(1)
                     statusRow(phase, mood: mood)
                     transcriptCard(phase, mood: mood)
+                    attachmentsCard(mood)
                     Spacer(minLength: 0)
                     callButton(phase)
                 }
@@ -57,6 +60,9 @@ struct ContentView: View {
             case .settings: SettingsPage { sheet = .pair }
             case .pair: PairPage()
             }
+        }
+        .fullScreenCover(item: $zoomed) { a in
+            if case let .image(image, name) = a.kind { ZoomImage(image: image, name: name) }
         }
         .alert("还没填 \(missingKey?.title ?? "") 的 API key", isPresented: Binding(get: { missingKey != nil },
                                                                               set: { if !$0 { missingKey = nil } })) {
@@ -99,6 +105,7 @@ struct ContentView: View {
                 VStack(spacing: 14) {
                     statusRow(phase, mood: mood)
                     transcriptCard(phase, mood: mood)
+                    attachmentsCard(mood)
                     Spacer(minLength: 0)
                     callButton(phase)
                 }
@@ -230,6 +237,90 @@ struct ContentView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(CardSurface(radius: 24).opacity(0.92))
+    }
+
+    /// Images (tap for full screen) and links (open in Safari) from the Mac, newest first; hidden when there are none.
+    @ViewBuilder private func attachmentsCard(_ mood: Mood) -> some View {
+        let items = controller.attachments.reversed()
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("附件").font(.caption.weight(.bold)).foregroundStyle(.secondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(items) { a in
+                            if case let .image(image, name) = a.kind {
+                                Button { zoomed = a } label: {
+                                    Image(uiImage: image).resizable().scaledToFit().frame(height: 72)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                }
+                                .buttonStyle(PressScale())
+                                .accessibilityLabel("图片 \(name)")
+                            }
+                        }
+                    }
+                }
+                .scrollClipDisabled()
+                ForEach(items) { a in
+                    if case let .link(url, title) = a.kind {
+                        Link(destination: url) {
+                            Label { Text(title).lineLimit(1) } icon: { Image(systemName: "link").foregroundStyle(mood.accent) }
+                                .font(.subheadline)
+                                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                        }
+                        .foregroundStyle(.primary)
+                    }
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CardSurface(radius: 24).opacity(0.92))
+            .fixedSize(horizontal: false, vertical: true)
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
+        }
+    }
+}
+
+/// Full-screen image: pinch to zoom (1x-6x), drag to pan while zoomed, double-tap toggles 2.5x.
+private struct ZoomImage: View {
+    let image: UIImage
+    let name: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var scale: CGFloat = 1
+    @State private var offset = CGSize.zero
+    @GestureState private var pinch: CGFloat = 1
+    @GestureState private var drag = CGSize.zero
+
+    var body: some View {
+        Image(uiImage: image).resizable().scaledToFit()
+            .accessibilityLabel("图片 \(name)")
+            .scaleEffect(scale * pinch)
+            .offset(x: offset.width + drag.width, y: offset.height + drag.height)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(.rect)
+            .gesture(MagnifyGesture()
+                .updating($pinch) { v, s, _ in s = v.magnification }
+                .onEnded { v in
+                    scale = min(max(scale * v.magnification, 1), 6)
+                    if scale == 1 { offset = .zero }
+                }
+                .simultaneously(with: DragGesture()
+                    .updating($drag) { v, s, _ in if scale > 1 { s = v.translation } }
+                    .onEnded { v in
+                        guard scale > 1 else { return }
+                        offset.width += v.translation.width
+                        offset.height += v.translation.height
+                    }))
+            .onTapGesture(count: 2) {
+                withAnimation(.smooth) {
+                    scale = scale > 1 ? 1 : 2.5
+                    offset = .zero
+                }
+            }
+            .background(Color.black.ignoresSafeArea())
+            .overlay(alignment: .topTrailing) {
+                V2IconButton(title: "关闭", symbol: "xmark") { dismiss() }.padding(16)
+            }
+            .environment(\.colorScheme, .dark)
     }
 }
 

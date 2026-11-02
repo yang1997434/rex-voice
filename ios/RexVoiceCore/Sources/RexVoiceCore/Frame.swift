@@ -2,7 +2,8 @@ import Foundation
 
 /// First byte of every phone <-> Mac frame (docs/protocol.md section 3).
 public enum FrameType: UInt8, Sendable {
-    case audio = 0, control = 1, salt = 2, keepalive = 3
+    /// `attach`: encrypted like 0/1, plaintext `[4B id BE][4B index BE][data]`, one chunk of an `attach` control.
+    case audio = 0, control = 1, salt = 2, keepalive = 3, attach = 4
 }
 
 /// Plaintext session-salt frame `[02][00000000][16-byte salt]`.
