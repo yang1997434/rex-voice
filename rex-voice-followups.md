@@ -2,10 +2,10 @@
 
 - [ ] 第一批：中继 → Mac 服务（含文字模式 CLI 自测）→ iOS app → 联调，顺序和验收见 `docs/plan-2026-11-01.md`。
 - [ ] 模型 A/B：同一组 20 句真实指令比 `gpt-realtime-2.1` / `gpt-realtime-2.1-mini` / `gpt-live-1`（准确率、首音延迟、每小时花费），定默认值，报表进 `docs/releases.md`。
-- [ ] 改全局 `~/.claude/hooks/prod-guard.py`：来自 rex-voice 的输入不算授权（改前给用户看原文和 diff）。
+- [作废 2026-11-02] 改全局 `~/.claude/hooks/prod-guard.py`：来自 rex-voice 的输入不算授权。用户 11-02 改定：语音可以授权部署，只靠复述确认；prod-guard 只加 rex-voice 项目行（见第三批）。
 - [ ] 正式版上线后归档 `~/data/claude/voice-probe`（服务和实验用的 Tailscale grant 11-01 都已停/删）。
 - [ ] 中继独立域名（`voice.maruiao.top`）：用户想要时在阿里云 DNS 加 A 记录到 23.94.9.58，再 certbot 扩证书。
-- [ ] 下一批候选：Claude 变 blocked 时主动来电（推送 / CallKit）、整台 Mac 控制工具组。
+- [ ] 下一批候选：Claude 变 blocked 时主动来电（CallKit；推送已在第三批做）、整台 Mac 控制工具组（用户 11-02 定路线：Rex 这边的开发监控交流先做完整，再往整台 Mac 控制演化）。
 
 ## 2026-11-01 第一批（1、2a–2d、3a、3b）收口追加
 - [ ] 文字模式 A/B 显示删工具项省 36% 输入 token 但只省 13% 费用；用语音真通话再比一次（`-keep-tool-outputs`），再定默认。
@@ -41,3 +41,17 @@
 - 下一步（用户 2026-11-02 定）：**功能和语音对话实测**——按 CLAUDE.md「真机验收清单」1–13 条逐条过，重点是真实用法：读 Rex 窗格 / Claude 进展、往会话发指令、语音挂断、打断、锁屏 10 分钟、蓝牙、静音挂断、Mac 离线恢复、网络切换。每条记结果进 docs/releases.md「真机反馈」，问题回派 coder。
 - 候选：Grok 试听真跑一次；局域网直连（等点头）；Gemini 默认排序看用户反馈；配对页横屏 1pt 间距。
 - 未答：`secret-add LOGIN_KEYCHAIN_PASSWORD`；report-publish 的 rsync 修法；Duo 内屏模拟器截图要辅助功能权限（真机已验，可不做）。
+
+## 2026-11-02 第三批（Rex 全操作 + 卡住提醒 + 图片链接 + 语音授权部署）
+- [已做] 方案 `~/.claude/plans/curious-zooming-lynx.md`；A 工具组 / B 通话层 / C 中继 APNs / D iOS 四份 brief 并行做完合入 main（f804dd3）；E prod-guard 加 rex-voice 行（37 测试绿，备份 `~/.cache/prod-guard.py.bak-20261102`）；iOS 0.3.0（202611020941）已上 TestFlight；Mac 服务已换新版。
+- [已做] APNs key 复用 Claude Terminal 那把（团队级，flow-cred `APNS_KEY_ID / APNS_TEAM_ID / APNS_KEY_PATH`）。
+- [ ] 中继部署（二进制 + 新 unit + /etc/rex-voice/relay.env + AuthKey.p8 + LoadCredential drop-in）：脚本在本批 scratchpad `deploy-relay-apns.sh`，要「部署 rex-voice 中继」授权；没部署前手机收不到卡住推送、Mac 发的 notify 被中继丢。部署后核 journal 里 APNs 启用行、真推一条。
+- [已做 11-02] reviewer 二审：P1 Claude 退出后窗格仍标 claude-code 会放行（加 owner.pid 存活判断）、P2 close_pane 查状态出错当可关（改拒）、P2 send_keys 对 shell 窗格能按 enter（非 Claude 窗格只许 ctrl+c / escape）、P2 拨号中卡住会多推一条（改跳过）、P3 `/data/claude/geo` 这种经符号链接的路径被拒（按真实路径比）、P3 show_file 相对路径（改拒）。其余处置见 `REVIEW.md`。
+- [ ] 真机验收 CLAUDE.md 清单 14–20，结果记 `docs/releases.md`「真机反馈」；Grok / Gemini 的挂断延后只测过 OpenAI 假服务端。
+- [已做 11-02] `internal/relay` 的 `TestSlowPeerOnlyClosesPeer` 偶发红：根因是中继先把新连接登记进 map 再发对端通知，对端转发的帧能抢在通知前面；改成先发通知再登记、对端是新来的才补发，40 次全绿。
+- [ ] 卡住提醒的两个边角：模型正在说话时 SendText 可能撞 `conversation_already_has_active_response`（没排队）；Mac 没连上中继时 notify 丢掉但仍占 10 分钟配额、不补发。真机碰到再修。
+- [ ] Workspace 目录写死 `~/data/claude`，没接 config.json；要配置时在 internal/config 加字段、cmd 透传。
+- [ ] send_keys 白名单按实测删了 y / n（Claude 提示框不认）；shell 的 `[y/N]` 用 send_to_pane 发 y。
+- [ ] iOS：aps-environment 写死 production，Debug 装真机可能和开发描述文件冲突（TestFlight 不受影响）；横屏 / Duo 展开时附件卡片布局没真机看；push_token 只在 WebSocket 建立时发、不随 present 重发。
+- [ ] 推送标题 / 正文没限长，超 4 KB 会被 APNs 413（现在正文截 100 字，实际到不了）。
+- [ ] `docs/plan-2026-11-01.md` 没更新本批内容，以 CLAUDE.md 和 protocol.md 为准。

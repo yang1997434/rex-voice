@@ -15,10 +15,10 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 ## 规矩
 
 - Go 1.27，只用标准库 + `golang.org/x/*`，唯一例外 `rsc.io/qr`（终端二维码，纯 Go 无依赖，2026-11-01 定）（WebSocket 用 `golang.org/x/net/websocket`，2026-11-01 定：只转发二进制帧、不需要 ping 控制，够用且在 x/* 范围内；模块路径 `github.com/yang1997434/rex-voice`）。`gofmt -l . && go vet ./... && go test ./...` 是门禁。
-- Swift 6 / SwiftUI，iOS 18 起，只用系统框架（AVAudioEngine、CryptoKit、VisionKit 扫码、Network）。不引第三方包，不用 WebRTC。构建用 `xcodebuild`，没有 Xcode GUI。
+- Swift 6 / SwiftUI，iOS 26 起（`project.yml` deploymentTarget，2026-11-02 按代码改正，原来写 18），只用系统框架（AVAudioEngine、CryptoKit、VisionKit 扫码、Network）。不引第三方包，不用 WebRTC。构建用 `xcodebuild`，没有 Xcode GUI。
 - `~/data/archive/claude-terminal-20261029` 里的旧 iOS 项目是无许可的私有 fork：**代码一行不抄**，只参考发版做法（见 `docs/plan-2026-11-01.md`「Context」）。
 - 工具层（`internal/tools`）是注册表，加新能力（AppleScript、computer-use）只加一组、不改调用方。
-- `send_to_pane` 对含「生产 / 部署 / 上线 / 发布 / 回滚 / 迁移 / rm -rf / git push / sudo」的文字直接拒，这是语音绕过 `~/.claude/hooks/prod-guard.py` 的临时闸；正式闸要改 prod-guard 认来源（续做）。
+- 语音发指令的闸（2026-11-02 用户定）：发往 **shell 窗格**的文字含「生产 / 部署 / 上线 / 发布 / 回滚 / 迁移 / rm -rf / git push / sudo」直接拒；发往 **Claude 窗格**的一律放行，靠提示词「逐字复述 → 用户确认」，部署授权照常由那个 Claude 的 `~/.claude/hooks/prod-guard.py` 把关（语音说「部署 geo 生产」等于用户在那个会话里打了这句）。关窗格 / 关会话也要先复述确认，在跑的窗格不带 force 不关。
 - 每次 TestFlight 上传写进 `docs/releases.md`：版本、build 号、commit、改了什么。
 
 ## 部署
@@ -46,6 +46,13 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 11. 设置页填 Qwen 的 key 并选 Qwen 模型 → 通话 → Mac 日志 `call started` 行里 provider=qwen、phone_key=true
 12. 设置页选一个音色按试听 → 1–3 秒内听到一句打招呼、按钮经连接中 / 播放中回到试听；通话中按钮灰
 13. iPhone Duo：合上时 app 铺到外屏边缘、页眉完整；展开后主屏两列、设置页居中；展开 / 合上来回切 3 次布局都对；横屏可用。
+14. 新开窗格：说「在 rex-voice 新开一个 Claude」→ 该会话多一个窗格、claude 已起来；说「把它改名叫 test」→ 窗格标签变 test；说「关掉它」→ 助手复述确认后窗格消失；对一个正在跑的窗格说关，助手说它在干什么、不关。
+15. 回答提示框：某个 Claude 弹 AskUserQuestion 或 plan 审批时，说「选第二个」「同意」→ 那个窗格选中对应项；说「取消」→ Esc。
+16. 卡住提醒（通话中）：通话时让另一个 Claude 弹一个问题 → 5–10 秒内助手主动说「X 的 Claude 卡住了，问…」。
+17. 卡住提醒（锁屏）：不在通话、手机锁屏，让一个 Claude 弹问题 → 手机收到推送「X 的 Claude 在等你」；同一窗格 10 分钟内不再推。
+18. 图片与链接：说「把那张截图发我」→ 转录卡片下出现缩略图，点开可缩放；说「把汇报页链接发我」→ 出现可点链接，点开进 Safari。
+19. 语音授权部署：对某个 Claude 窗格说「部署 geo 生产」→ 助手逐字复述、你说「对」→ 那句进了那个窗格，Claude 侧 prod-guard 认它为授权（不真部署，只看 Claude 的回应）。
+20. 挂断：说「挂了」→ 助手整句道别说完才挂，没有被截断。
 
 ## 哪些文档不能信
 

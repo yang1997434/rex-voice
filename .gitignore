@@ -19,3 +19,4 @@ docs/design-specs/personas/_refs/**/*.webp
 docs/design-specs/personas/_refs/**/*.png
 docs/design-specs/personas/_refs/**/*.jpg
 docs/design-specs/personas/_refs/**/*.txt
+ios/RexVoice/*.entitlements

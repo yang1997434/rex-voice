@@ -85,7 +85,9 @@ fi
 
 commit=$(git -C "$repo" rev-parse --short HEAD)
 [ -z "$(git -C "$repo" status --porcelain)" ] || commit="$commit-dirty"
-printf '| %s | %s | %s | %s | %s |\n' "$(date +%F)" "$version" "$build" "$commit" "${note//|/\\|}" >>"$repo/docs/releases.md"
+# Insert after the last table row, not at EOF: sections below the table (真机反馈) would otherwise swallow the row.
+row="$(printf '| %s | %s | %s | %s | %s |' "$(date +%F)" "$version" "$build" "$commit" "${note//|/\\|}")"
+awk -v row="$row" '{ lines[NR]=$0; if ($0 ~ /^\| 20[0-9][0-9]-/) last=NR } END { for (i=1;i<=NR;i++) { print lines[i]; if (i==last) print row } }' "$repo/docs/releases.md" >"$repo/docs/releases.md.tmp" && mv "$repo/docs/releases.md.tmp" "$repo/docs/releases.md"
 echo "build-ios: 上传完成，已记进 docs/releases.md；TestFlight 一般 1-30 分钟后可见"
 echo "build-ios: Delivery UUID 在这些目录的日志里："
 ls -dt "$(getconf DARWIN_USER_TEMP_DIR)"RexVoice_*.xcdistributionlogs 2>/dev/null | head -n 3 || echo "  （没找到 RexVoice_*.xcdistributionlogs）"
