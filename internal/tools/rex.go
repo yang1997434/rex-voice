@@ -103,7 +103,7 @@ func NewRexTools(opts Options) []Tool {
 		},
 		{
 			Name:        "send_to_pane",
-			Description: "把一句话打进某个窗格并回车（比如给 Claude 下一条指令、斜杠命令）。调用前必须先把要发的原文逐字复述给用户、得到明确同意。发往 shell 窗格的破坏性命令（部署、上线、生产、删除之类）会被拒，让用户回 Mac 手打；发往 Claude 的部署指令要先逐字复述、用户确认后才发。",
+			Description: "把一句话打进某个窗格并回车（比如给 Claude 下一条指令、斜杠命令）。目标是 Claude 窗格、或文字含部署 / 上线 / 生产 / 删除 / push / sudo 这类词时，调用前必须先把原文逐字复述给用户、得到明确同意；往 shell 窗格发普通命令直接发，发完说一句发了什么。发往 shell 窗格的破坏性命令会被拒，让用户回 Mac 手打。",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"text":{"type":"string"}},"required":["block","text"],"additionalProperties":false}`),
 			Run:         e.sendToPane,
 		},
