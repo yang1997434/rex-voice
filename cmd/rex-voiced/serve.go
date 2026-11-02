@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -83,7 +84,9 @@ func serve(args []string) int {
 		Version:     version,
 	}
 	if !*echo {
-		cfg.Instructions = func() string { return voice.Build(c.Name, c.ProjectAliases, projectLabels()) }
+		cfg.Instructions = func(name string) string {
+			return voice.Build(cmp.Or(name, c.Name), c.ProjectAliases, projectLabels())
+		}
 		cfg.Voice = voice.Config{
 			Provider:   voice.Provider(c.Provider),
 			Model:      *model,

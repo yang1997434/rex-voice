@@ -10,7 +10,7 @@ import (
 
 const (
 	previewInstructions = "你是电话助手，只用中文。"
-	previewText         = "用一句话打招呼，说：你好，我是你的语音助手，很高兴为你服务。"
+	previewText         = "用一句话打招呼，说：%s你好，我是你的语音助手，很高兴为你服务。"
 )
 
 // previewState is one voice.preview (protocol section 3): a short provider session that says one
@@ -21,6 +21,7 @@ type previewState struct {
 	sess     voice.Session // nil while dialing
 	playing  bool          // "playing" sent
 	rem      []byte        // tail shorter than one frame
+	text     string        // what to say; greets voice.preview's name when it brought one
 }
 
 func (s *server) sendPreview(state, msg string) {
@@ -48,7 +49,7 @@ func (s *server) startPreview(r startReq) {
 		return
 	}
 	vc.TextOnly, vc.Transcribe, vc.Tools, vc.Call, vc.Instructions = false, false, nil, nil, previewInstructions
-	p := &previewState{provider: vc.Provider, t0: time.Now()}
+	p := &previewState{provider: vc.Provider, t0: time.Now(), text: fmt.Sprintf(previewText, r.Name)}
 	s.preview = p
 	vc.Handlers = s.previewHandlers(p)
 	s.sendPreview("connecting", "")
@@ -86,7 +87,7 @@ func (s *server) previewDialed(p *previewState, sess voice.Session, err error) {
 			}
 		})
 	}()
-	if err := sess.SendText(previewText); err != nil {
+	if err := sess.SendText(p.text); err != nil {
 		s.failPreview(err.Error())
 	}
 }

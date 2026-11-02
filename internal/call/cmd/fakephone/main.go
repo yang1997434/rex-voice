@@ -49,12 +49,13 @@ func main() {
 	pairFile := flag.String("pair", filepath.Join(home, "Library", "Application Support", "rex-voice", "pair.json"), "pair.json written by rex-voiced pair")
 	relay := flag.String("relay", "ws://127.0.0.1:8790/_voice/ws", "relay WebSocket URL")
 	mode := flag.String("mode", "echo", "echo | wav | idle")
-	wav := flag.String("wav", "", "WAV file for -mode wav (24 kHz mono PCM16)")
+	wav := flag.String("wav", "", "WAV file(s) for -mode wav (24 kHz mono PCM16), comma-separated: each is one user turn, sent after the previous answer ends")
 	out := flag.String("out", "", "write received audio as raw PCM16 24 kHz here")
 	deviceID := flag.String("device-id", "fakephone-0001", "device_id sent in hello")
 	wait := flag.Duration("wait", 60*time.Second, "how long to wait for the answer / hang_up")
+	barge := flag.Duration("barge", 0, "-mode wav: send each later turn this long after the answer starts (barge-in) instead of after it ends")
 	flag.Parse()
-	if err := run(*pairFile, *relay, *mode, *wav, *out, *deviceID, *wait); err != nil {
+	if err := run(*pairFile, *relay, *mode, *wav, *out, *deviceID, *wait, *barge); err != nil {
 		logf("FAIL: %v", err)
 		os.Exit(1)
 	}
@@ -70,18 +71,27 @@ type phone struct {
 	readErr chan error
 }
 
-func run(pairFile, relay, mode, wavPath, out, deviceID string, wait time.Duration) error {
+func run(pairFile, relay, mode, wavPath, out, deviceID string, wait, barge time.Duration) error {
 	p, err := pair.Load(pairFile)
 	if err != nil {
 		return err
 	}
 	var send []byte
+	var turns [][]byte // -mode wav: the user turns after the first
 	switch mode {
 	case "echo":
 		send = sine(5 * time.Second)
 	case "wav":
-		if send, err = readWAV(wavPath); err != nil {
-			return err
+		for i, f := range strings.Split(wavPath, ",") {
+			b, err := readWAV(f)
+			if err != nil {
+				return err
+			}
+			if i == 0 {
+				send = b
+			} else {
+				turns = append(turns, b)
+			}
 		}
 	case "idle":
 	default:
@@ -120,11 +130,7 @@ func run(pairFile, relay, mode, wavPath, out, deviceID string, wait time.Duratio
 		return err
 	}
 
-	for off := 0; off < len(send); off += 960 { // paced like a microphone: one 20 ms frame per 20 ms
-		ph.send(pair.TypeAudio, send[off:min(off+960, len(send))])
-		time.Sleep(20 * time.Millisecond)
-	}
-	logf("sent %d ms of audio", len(send)/48)
+	ph.speak(send)
 
 	switch mode {
 	case "echo":
@@ -137,32 +143,18 @@ func run(pairFile, relay, mode, wavPath, out, deviceID string, wait time.Duratio
 			return errors.New("echo did not come back intact")
 		}
 	case "wav":
-		// Server VAD only ends the turn on audio it receives, so keep streaming silence like an open mic.
-		stop, stopped := make(chan struct{}), make(chan struct{})
-		go func() {
-			defer close(stopped)
-			for t := time.NewTicker(20 * time.Millisecond); ; {
-				select {
-				case <-stop:
-					t.Stop()
-					return
-				case <-t.C:
-					ph.send(pair.TypeAudio, make([]byte, 960))
-				}
+		for i := 0; ; i++ {
+			if err := ph.answer(wait, i < len(turns) && barge > 0, barge); err != nil {
+				return err
 			}
-		}()
-		_, err := ph.until("status", "speaking", wait)
-		if err == nil {
-			_, err = ph.until("status", "listening", wait)
+			if i >= len(turns) {
+				break
+			}
+			if barge == 0 {
+				time.Sleep(time.Second) // a human pause before the next turn
+			}
+			ph.speak(turns[i])
 		}
-		close(stop)
-		<-stopped
-		if err != nil {
-			return err
-		}
-		ph.mu.Lock()
-		logf("answer audio: %d frames, %d ms", ph.gotN, len(ph.got)/48)
-		ph.mu.Unlock()
 	case "idle":
 		m, err := ph.until("hang_up", "", wait)
 		if err != nil {
@@ -178,6 +170,49 @@ func run(pairFile, relay, mode, wavPath, out, deviceID string, wait time.Duratio
 		return err
 	}
 	return writeOut(ph, out)
+}
+
+// speak streams one user turn paced like a microphone: one 20 ms frame per 20 ms.
+func (ph *phone) speak(pcm []byte) {
+	for off := 0; off < len(pcm); off += 960 {
+		ph.send(pair.TypeAudio, pcm[off:min(off+960, len(pcm))])
+		time.Sleep(20 * time.Millisecond)
+	}
+	logf("sent %d ms of audio", len(pcm)/48)
+}
+
+// answer keeps the mic open with silence (server VAD only ends a turn on audio it receives) until the
+// Mac goes speaking then back to listening, and logs how much answer audio arrived so far.
+// With cut, it returns `barge` after the answer starts instead (the caller then talks over the model).
+func (ph *phone) answer(wait time.Duration, cut bool, barge time.Duration) error {
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for t := time.NewTicker(20 * time.Millisecond); ; {
+			select {
+			case <-stop:
+				t.Stop()
+				return
+			case <-t.C:
+				ph.send(pair.TypeAudio, make([]byte, 960))
+			}
+		}
+	}()
+	_, err := ph.until("status", "speaking", wait)
+	if err == nil && cut {
+		time.Sleep(barge)
+	} else if err == nil {
+		_, err = ph.until("status", "listening", wait)
+	}
+	close(stop)
+	<-stopped
+	if err != nil {
+		return err
+	}
+	ph.mu.Lock()
+	logf("answer audio: %d frames, %d ms", ph.gotN, len(ph.got)/48)
+	ph.mu.Unlock()
+	return nil
 }
 
 func writeOut(ph *phone, out string) error {

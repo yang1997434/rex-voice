@@ -1,0 +1,1 @@
+{"records":[{"state":"working","app":"rex-job","effective_app":"rex-job","msg":"bash -c 'set -o pipefail; { gofmt -l . && go vet ./... && go test ./...; } 2>&1 | tee /tmp/gate.log'","updated_at":"2026-11-02T10:00:00-08:00"}]}

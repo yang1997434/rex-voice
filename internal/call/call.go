@@ -33,6 +33,8 @@ type callState struct {
 
 	rem []byte // tail shorter than one frame, held until more audio or the turn ends
 
+	name string // call.start's name for the user; "" = config.json's. Memory only, reused on rotation.
+
 	echoFrames int
 	echoQ      chan echoFrame // replayed in order by echoLoop; closed when the call ends
 	lastReport time.Time
@@ -43,12 +45,14 @@ type echoFrame struct {
 	pcm []byte
 }
 
-// startReq is call.start's optional provider choice (protocol section 3). APIKey is never logged.
+// startReq is call.start's optional provider choice and how to address the user (protocol section 3).
+// APIKey is never logged.
 type startReq struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	Voice    string `json:"voice"`
 	APIKey   string `json:"api_key"`
+	Name     string `json:"name"`
 }
 
 // voiceConfig merges call.start over config.json; voice.Dial fills what is still empty from voice.Defaults.
@@ -95,7 +99,7 @@ func (s *server) startCall(r startReq) {
 		}
 	}
 	now := time.Now()
-	c := &callState{lastAudio: now, lastReport: now, echo: s.cfg.Echo, vc: vc}
+	c := &callState{lastAudio: now, lastReport: now, echo: s.cfg.Echo, vc: vc, name: r.Name}
 	s.call = c
 	s.log.Info("call started", "echo", c.echo, "provider", vc.Provider, "model", vc.Model, "voice", vc.Voice, "phone_key", r.APIKey != "")
 	if c.echo {
@@ -106,12 +110,13 @@ func (s *server) startCall(r startReq) {
 	}
 	s.setState(c, "connecting")
 	c.fill = time.NewTicker(fillEvery)
-	s.dialSession(c, s.instructions)
+	s.dialSession(c, func() string { return s.instructions(c.name) })
 }
 
-func (s *server) instructions() string {
+// instructions builds the prompt; name is call.start's, "" for config.json's.
+func (s *server) instructions(name string) string {
 	if s.cfg.Instructions != nil {
-		return s.cfg.Instructions()
+		return s.cfg.Instructions(name)
 	}
 	return s.cfg.Voice.Instructions
 }
@@ -185,7 +190,11 @@ func (s *server) handlers(sid int) voice.Handlers {
 	}
 	transcript := func(who string) func(string) {
 		return func(text string) {
-			on(func(*callState) { s.sendCtl(map[string]any{"t": "transcript", "who": who, "text": text}) })
+			on(func(*callState) {
+				// Kept in the Mac log so "it said it sent but nothing arrived" can be checked against tool calls.
+				s.log.Info("transcript", "who", who, "text", truncRunes(strings.TrimSpace(text), 160))
+				s.sendCtl(map[string]any{"t": "transcript", "who": who, "text": text})
+			})
 		}
 	}
 	return voice.Handlers{
@@ -366,7 +375,7 @@ func (s *server) onTick(now time.Time) {
 		}
 		s.log.Info("rotating voice session", "age", c.sess.Age().Round(time.Second))
 		recent := b.String()
-		s.dialSession(c, func() string { return s.instructions() + recent })
+		s.dialSession(c, func() string { return s.instructions(c.name) + recent })
 	}
 }
 

@@ -57,6 +57,18 @@ func TestPreviewPlaysThenDone(t *testing.T) {
 }
 
 // Mid-call a preview is refused and the call carries on with its own session.
+func TestPreviewGreetsName(t *testing.T) {
+	e := start(t, false, "")
+	ph := e.ready(t)
+	ph.ctl(t, map[string]any{"t": "voice.preview", "provider": "openai", "name": "LeBron"})
+	ph.expectPreview(t, "connecting", "")
+	ai := e.ai.accept(t)
+	ai.next(t, "session.update")
+	if b, _ := json.Marshal(ai.next(t, "conversation.item.create")); !bytes.Contains(b, []byte("LeBron你好，我是你的语音助手")) {
+		t.Fatalf("preview text = %s", b)
+	}
+}
+
 func TestPreviewRefusedInCall(t *testing.T) {
 	e := start(t, false, "")
 	ph, ai := e.inCall(t)

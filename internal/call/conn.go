@@ -43,8 +43,9 @@ type Config struct {
 	Version string
 
 	// Instructions, if set, replaces Voice.Instructions and is called off the Run goroutine at every
-	// call.start and session rotation, so the prompt sees what is running now.
-	Instructions func() string
+	// call.start and session rotation, so the prompt sees what is running now. name is call.start's
+	// name for the user, "" when the phone sent none (use config.json's).
+	Instructions func(name string) string
 }
 
 // Timings; tests shorten them.

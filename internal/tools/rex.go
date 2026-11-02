@@ -79,7 +79,7 @@ func NewRexTools(opts Options) []Tool {
 	return append([]Tool{
 		{
 			Name:        "list_panes",
-			Description: "列出 Mac 上所有 Rex 终端窗格，以及每个窗格里程序报的状态（working / blocked / idle / done）、它正在做什么、属于哪个项目。",
+			Description: "列出 Mac 上所有 Rex 终端窗格，以及每个窗格里程序报的状态（working / blocked / idle / done）、它正在做什么（Claude 窗格是它报的一句话，其它窗格只说在跑命令 / 空闲 / 等输入）、属于哪个项目。",
 			Parameters:  noParams,
 			Run:         e.listPanes,
 		},
@@ -97,13 +97,13 @@ func NewRexTools(opts Options) []Tool {
 		},
 		{
 			Name:        "read_claude",
-			Description: "读某个 Claude 的会话记录：最近一条用户指令和 Claude 最近两段原话（完整，不受屏幕滚动影响），以及它现在 busy / idle / blocked。问「Claude 说了什么 / 结论是什么 / 做到哪了 / 卡住没有」优先用这个。传 pid（来自 list_claude）或 block（来自 list_panes）。",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"pid":{"type":"integer"},"block":{"type":"string"}},"additionalProperties":false}`),
+			Description: "读某个 Claude 的会话记录（不受屏幕滚动影响）：asked 是最近一条用户指令，reply 是 Claude 最后一条回复去掉代码、路径、链接后的结论，status 是它现在 busy / idle / blocked。问「Claude 说了什么 / 结论 / 做到哪了 / 卡住没有」优先用这个；默认只给结论，用户要原文再带 verbose:true（多给 detail：最近两段原话）。传 pid（来自 list_claude）或 block（来自 list_panes）。",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"pid":{"type":"integer"},"block":{"type":"string"},"verbose":{"type":"boolean","description":"要 Claude 原话时传 true"}},"additionalProperties":false}`),
 			Run:         e.readClaude,
 		},
 		{
 			Name:        "send_to_pane",
-			Description: "把一句话打进某个窗格并回车（比如给 Claude 下一条指令、斜杠命令）。调用前必须先把要发的原文逐字复述给用户、得到明确同意。发往 shell 窗格的破坏性命令（部署、上线、生产、删除之类）会被拒，让用户回 Mac 手打；发往 Claude 的部署指令要先逐字复述、用户确认后才发。",
+			Description: "把一句话打进某个窗格并回车（比如给 Claude 下一条指令、斜杠命令）。目标是 Claude 窗格、或文字含部署 / 上线 / 生产 / 删除 / push / sudo 这类词时，调用前必须先把原文逐字复述给用户、得到明确同意；往 shell 窗格发普通命令直接发，发完说一句发了什么。发往 shell 窗格的破坏性命令会被拒，让用户回 Mac 手打。",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"text":{"type":"string"}},"required":["block","text"],"additionalProperties":false}`),
 			Run:         e.sendToPane,
 		},
@@ -237,6 +237,7 @@ func (e *env) listPanes(ctx context.Context, args json.RawMessage) (any, error) 
 		return nil, err
 	}
 	for i := range ps {
+		ps[i].Doing = paneDoing(ps[i])
 		if ps[i].pid > 0 {
 			// The session label is not necessarily the project name; the process cwd is.
 			ps[i].Project = filepath.Base(e.cwdOf(ctx, ps[i].pid))
@@ -246,6 +247,21 @@ func (e *env) listPanes(ctx context.Context, args json.RawMessage) (any, error) 
 		}
 	}
 	return ps, nil
+}
+
+// paneDoing keeps a Claude pane's status msg and turns any other pane's into a short phrase: a shell or
+// rex-job msg is the whole command line, which the voice model would otherwise read out.
+func paneDoing(p pane) string {
+	if p.App == "claude-code" {
+		return truncRunes(p.Doing, 80)
+	}
+	switch p.State {
+	case "working":
+		return "在跑命令"
+	case "blocked":
+		return "等输入"
+	}
+	return "空闲"
 }
 
 const (

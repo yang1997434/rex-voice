@@ -18,7 +18,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 - Swift 6 / SwiftUI，iOS 26 起（`project.yml` deploymentTarget，2026-11-02 按代码改正，原来写 18），只用系统框架（AVAudioEngine、CryptoKit、VisionKit 扫码、Network）。不引第三方包，不用 WebRTC。构建用 `xcodebuild`，没有 Xcode GUI。
 - `~/data/archive/claude-terminal-20261029` 里的旧 iOS 项目是无许可的私有 fork：**代码一行不抄**，只参考发版做法（见 `docs/plan-2026-11-01.md`「Context」）。
 - 工具层（`internal/tools`）是注册表，加新能力（AppleScript、computer-use）只加一组、不改调用方。
-- 语音发指令的闸（2026-11-02 用户定）：发往 **shell 窗格**的文字含「生产 / 部署 / 上线 / 发布 / 回滚 / 迁移 / rm -rf / git push / sudo」直接拒；发往 **Claude 窗格**的一律放行，靠提示词「逐字复述 → 用户确认」，部署授权照常由那个 Claude 的 `~/.claude/hooks/prod-guard.py` 把关（语音说「部署 geo 生产」等于用户在那个会话里打了这句）。关窗格 / 关会话也要先复述确认，在跑的窗格不带 force 不关。
+- 语音发指令的闸（2026-11-02 用户定）：发往 **shell 窗格**的文字含「生产 / 部署 / 上线 / 发布 / 回滚 / 迁移 / rm -rf / git push / sudo」直接拒；发往 **Claude 窗格**的一律放行，靠提示词「逐字复述 → 用户确认」（往 shell 窗格发普通命令不复述、直接发，2026-11-02 用户定），部署授权照常由那个 Claude 的 `~/.claude/hooks/prod-guard.py` 把关（语音说「部署 geo 生产」等于用户在那个会话里打了这句）。关窗格 / 关会话也要先复述确认，在跑的窗格不带 force 不关。
 - 每次 TestFlight 上传写进 `docs/releases.md`：版本、build 号、commit、改了什么。
 
 ## 部署

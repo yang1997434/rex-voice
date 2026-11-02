@@ -2,6 +2,7 @@ package call
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -679,7 +680,7 @@ func TestShowLink(t *testing.T) {
 func TestInstructionsRebuiltPerCall(t *testing.T) {
 	var n atomic.Int32
 	e := startWith(t, false, "", relay.NewHub(), func(c *Config) {
-		c.Instructions = func() string { return fmt.Sprintf("table %d", n.Add(1)) }
+		c.Instructions = func(string) string { return fmt.Sprintf("table %d", n.Add(1)) }
 	})
 	instrOf := func(ai *aiConn) string {
 		return ai.next(t, "session.update")["session"].(map[string]any)["instructions"].(string)
@@ -690,6 +691,30 @@ func TestInstructionsRebuiltPerCall(t *testing.T) {
 		ai := e.ai.accept(t)
 		if got := instrOf(ai); got != fmt.Sprintf("table %d", want) {
 			t.Fatalf("call %d instructions = %q", want, got)
+		}
+		ph.expectStatus(t, "connecting", "listening")
+		ph.ctl(t, map[string]any{"t": "call.end"})
+		ph.expectStatus(t, "ended")
+		ai.waitClosed(t)
+	}
+}
+
+// call.start's name addresses the user for that call only; the next call without one gets "" (config.json's).
+func TestCallStartNameInInstructions(t *testing.T) {
+	e := startWith(t, false, "", relay.NewHub(), func(c *Config) {
+		c.Instructions = func(name string) string { return voice.Build(cmp.Or(name, "小王"), nil, nil) }
+	})
+	ph := e.ready(t)
+	for _, tc := range []struct{ name, want, not string }{{"LeBron", "你是LeBron的", "小王"}, {"", "你是小王的", "LeBron"}} {
+		start := map[string]any{"t": "call.start"}
+		if tc.name != "" {
+			start["name"] = tc.name
+		}
+		ph.ctl(t, start)
+		ai := e.ai.accept(t)
+		instr := ai.next(t, "session.update")["session"].(map[string]any)["instructions"].(string)
+		if !strings.Contains(instr, tc.want) || strings.Contains(instr, tc.not) {
+			t.Fatalf("name %q: instructions = %q", tc.name, instr)
 		}
 		ph.expectStatus(t, "connecting", "listening")
 		ph.ctl(t, map[string]any{"t": "call.end"})
