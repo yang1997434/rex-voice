@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/yang1997434/rex-voice/internal/config"
 )
@@ -136,7 +137,7 @@ func install(args []string) int {
 		fmt.Fprintln(os.Stderr, "写 plist 失败，没有装：", err)
 		return 1
 	}
-	exec.Command("launchctl", "bootout", launchDomain()+"/"+launchLabel).Run() // not loaded yet is fine
+	bootout()
 	if out, err := exec.Command("launchctl", "bootstrap", launchDomain(), dst).CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "launchctl bootstrap 失败：%v %s\n", err, out)
 		return 1
@@ -160,11 +161,24 @@ func uninstall(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	exec.Command("launchctl", "bootout", launchDomain()+"/"+launchLabel).Run() // not loaded is fine
+	bootout()
 	if err := os.Remove(plistPath(home)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	fmt.Printf("已停掉并删除 %s。配置和配对还在 %s；钥匙串里的 key 要删就运行 security delete-generic-password -s rex-voice -a <openai|qwen|doubao>\n", launchLabel, dir)
 	return 0
+}
+
+// bootout unloads the agent and waits until launchd has let go of it: bootstrap right after a
+// bootout that is still in progress fails with "Input/output error" (seen 2026-11-01). Not loaded is fine.
+func bootout() {
+	target := launchDomain() + "/" + launchLabel
+	exec.Command("launchctl", "bootout", target).Run()
+	for range 50 {
+		if exec.Command("launchctl", "print", target).Run() != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
