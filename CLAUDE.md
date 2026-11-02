@@ -23,7 +23,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 
 ## 部署
 
-- **中继（ccs-maruiao）**：改生产，先要用户明文说「部署 rex-voice 中继」。步骤：本机 `GOOS=linux GOARCH=amd64 go build` → `scp` 到 `/opt/rex-voice/` → `systemctl restart rex-voice-relay` → `curl -A rex-voice-check https://r.maruiao.top/_voice/healthz`（不带 UA 会被该站的反爬 403）。中继以 systemd `DynamicUser` 跑、只听 `127.0.0.1:8790`。nginx 片段在 `scripts/nginx-voice.conf`，改 nginx 前先备份原文件。按总纲「部署分档」走：只换二进制算热修档。
+- **中继（ccs-maruiao）**：改生产，先要用户明文说「部署 rex-voice 中继」。步骤：本机 `GOOS=linux GOARCH=amd64 go build` → `scp` 到 `/opt/rex-voice/` → `systemctl restart rex-voice-relay` → `curl -A rex-voice-check https://r.maruiao.top/_voice/healthz`（不带 UA 会被该站的反爬 403）。中继以 systemd `DynamicUser` 跑、只听 `127.0.0.1:8790`。nginx 片段在 `scripts/nginx-voice.conf`，改 nginx 前先备份原文件。按总纲「部署分档」走：只换二进制算热修档。APNs（2026-11-02 上线）：`/etc/rex-voice/relay.env`（APNS_KEY_PATH=/run/credentials/rex-voice-relay.service/apns.p8、APNS_KEY_ID、APNS_TEAM_ID）+ `/etc/rex-voice/AuthKey.p8`（root 0600，key 来自 flow-cred `APNS_KEY_PATH`）+ drop-in `rex-voice-relay.service.d/apns.conf` 写 `LoadCredential=apns.p8:/etc/rex-voice/AuthKey.p8`；unit 备份在 `/etc/rex-voice/backups/`。重启后 journal 要有 `apns push enabled`，推一条要看到 `push ok`。
 - **Mac 服务**：`rex-voiced setup` → `pair` → `install`（`uninstall` 卸），本机、可随时回退，不算生产。对外分发包用 `scripts/release-mac.sh <版本>`（签名 + 公证），装法见 `README.md`。
 - **iOS**：`scripts/build-ios.sh <版本>`，用 ASC Admin key（`flow-cred ASC_ADMIN_KEY_ID / ASC_ISSUER_ID / ASC_ADMIN_KEY_PATH`），team `KAA6GJ59XS`，bundle id `com.maruiao.rexvoice`。发前先 `security unlock-keychain`，否则 archive 会卡死在签名。
 

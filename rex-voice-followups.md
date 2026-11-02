@@ -45,7 +45,7 @@
 ## 2026-11-02 第三批（Rex 全操作 + 卡住提醒 + 图片链接 + 语音授权部署）
 - [已做] 方案 `~/.claude/plans/curious-zooming-lynx.md`；A 工具组 / B 通话层 / C 中继 APNs / D iOS 四份 brief 并行做完合入 main（f804dd3）；E prod-guard 加 rex-voice 行（37 测试绿，备份 `~/.cache/prod-guard.py.bak-20261102`）；iOS 0.3.0（202611020941）已上 TestFlight；Mac 服务已换新版。
 - [已做] APNs key 复用 Claude Terminal 那把（团队级，flow-cred `APNS_KEY_ID / APNS_TEAM_ID / APNS_KEY_PATH`）。
-- [ ] 中继部署（二进制 + 新 unit + /etc/rex-voice/relay.env + AuthKey.p8 + LoadCredential drop-in）：脚本在本批 scratchpad `deploy-relay-apns.sh`，要「部署 rex-voice 中继」授权；没部署前手机收不到卡住推送、Mac 发的 notify 被中继丢。部署后核 journal 里 APNs 启用行、真推一条。
+- [已做 11-02] 中继部署（用户授权「部署 rex-voice 中继」）：新二进制 + unit + relay.env + AuthKey.p8 + LoadCredential drop-in；journal `apns push enabled`，用临时 Claude 弹 AskUserQuestion 真推了一条，中继 `push ok`（Apple 已收）。步骤写进 CLAUDE.md「部署」。
 - [已做 11-02] reviewer 二审：P1 Claude 退出后窗格仍标 claude-code 会放行（加 owner.pid 存活判断）、P2 close_pane 查状态出错当可关（改拒）、P2 send_keys 对 shell 窗格能按 enter（非 Claude 窗格只许 ctrl+c / escape）、P2 拨号中卡住会多推一条（改跳过）、P3 `/data/claude/geo` 这种经符号链接的路径被拒（按真实路径比）、P3 show_file 相对路径（改拒）。其余处置见 `REVIEW.md`。
 - [ ] 真机验收 CLAUDE.md 清单 14–20，结果记 `docs/releases.md`「真机反馈」；Grok / Gemini 的挂断延后只测过 OpenAI 假服务端。
 - [已做 11-02] `internal/relay` 的 `TestSlowPeerOnlyClosesPeer` 偶发红：根因是中继先把新连接登记进 map 再发对端通知，对端转发的帧能抢在通知前面；改成先发通知再登记、对端是新来的才补发，40 次全绿。
