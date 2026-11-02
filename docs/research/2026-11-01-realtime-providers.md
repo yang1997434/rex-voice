@@ -52,3 +52,14 @@
 - 用量 `usageMetadata{promptTokenCount, responseTokenCount, promptTokensDetails[], responseTokensDetails[]（按 modality 拆）}`。价格：音频入 $3/M（≈$0.005/分钟）、出 $12/M（≈$0.018/分钟），文本入 $0.75 / 出 $4.50；免费层可用。
 - 音色 30 个：Zephyr、Puck、Charon、Kore、Fenrir、Leda、Orus、Aoede、Callirrhoe、Autonoe、Enceladus、Iapetus、Umbriel、Algieba、Despina、Erinome、Algenib、Rasalgethi、Laomedeia、Achernar、Alnilam、Schedar、Gacrux、Pulcherrima、Achird、Zubenelgenubi、Vindemiatrix、Sadachbia、Sadaltager、Sulafat。中文 zh-Hans 在语言表，靠 systemInstruction 限定。
 - 坑：中国大陆 / 香港不在支持地区（本机在美国，不影响）；原生音频只出 AUDIO，文字靠转写；Extended Thinking 判空闲看 `interactionStatus: IDLE`。
+
+## xAI Grok Voice（2026-11-01 researcher，官方 docs.x.ai，没真跑）
+
+- 模型 `grok-voice-3.0`（`grok-voice-latest` 指向它；无 think-fast-3.0）。端点 `wss://api.x.ai/v1/realtime?model=grok-voice-3.0[&reasoning.effort=none|high][&conversation_id=]`，头 `Authorization: Bearer <key>`。协议 = OpenAI Realtime GA 事件名，官方称换 base URL 可直接用 OpenAI SDK。
+- 与 OpenAI 的差异：`session.update.session` 里 **无 `type:"realtime"`**；`voice` 和 `turn_detection` 在 session 顶层；`turn_detection` 只有 `{type:"server_vad"}` 或 null（无 threshold/semantic_vad/interrupt_response；多余字段是否报错未核实）+ `idle_timeout_ms`；无 `noise_reduction`、无 `tool_choice`（schema 里没有，发了是否报错未核实）；音频 `audio.input.format {type:"audio/pcm", rate:24000}`（8k–48k 可选，默认 24k）同 OpenAI；用户转写要 `audio.input.transcription.model:"grok-transcribe"` 才推 `conversation.item.input_audio_transcription.updated`（累计全文），`.completed` 是否仍发未核实；`response.output_text.delta` 和 `response.text.delta` 都会出现。
+- 工具：`function` 扁平格式（指南）vs 嵌套（schema）矛盾，先扁平；结果 `function_call_output` + `response.create`，但官方要求**等本地音频播完再发 `response.create`**，否则下一轮和没播完的叠音。自带 `web_search` / `x_search` / `file_search` / `mcp`。
+- 打断：VAD 模式自动 cancel；`conversation.item.truncate` 有（回执多带 `transcript`）；`output_audio_buffer.clear` 只在 WebRTC/SIP。`conversation.item.delete` 有。
+- 会话 120 分钟（`error.type=max_duration`）；`resumption.enabled` + `?conversation_id=` 可续接 30 分钟内的历史。
+- usage 只有 `input_tokens / output_tokens / total_tokens`，无音频文本拆分。**计费 $0.08/分钟（含模型），开 server_vad 时按连接时长计、静音也算**；每条客户端 `conversation.item.create`（文本）另 $0.004，`function_call_output` 免费。并发 10/team（档位 T0–T4 为 10/20/50/100/200）。区域 us-east-1。
+- 音色：文档点到 `eve`（默认）、`ara`、`rex`，发布文 Ara/Eve/Leo，完整表要 `GET /v1/tts/voices`；不分大小写，每个音色会所有语言；`zh` 在语言表。
+- 坑：默认 `reasoning.effort=high` 可能拖慢首包，实测 `none`；重放事件名 created/added 两说。

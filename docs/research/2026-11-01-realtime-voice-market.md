@@ -388,3 +388,5 @@ STS 榜具体分数在 HF Space（HumeAI/rw-voice-eq），抓不到，**查不�
 - 讯飞「超拟人交互」请求体分识别/语义/合成三段，更像级联封装；腾讯、MiniMax 明确是级联。要原生 S2S 就别考虑这三家。
 - 百度端到端模型文档像是 OpenAI 事件名的子集，功能上没有开发者自定义工具，不适合本项目。
 - 接入优先级建议：先 Qwen-Audio-3.1-realtime-plus（协议已调研、有免费额度、能核实 token 换算），再试 StepAudio 3 Realtime（限免期零成本、事件名跟 OpenAI beta 接近，`internal/voice` 的 OpenAI 适配大概率能复用大半），豆包 3.0 等用户在火山控制台确认开通后再接。
+
+> 勘误（2026-11-01 Grok 协议调研后）：Grok 没有原生 WebRTC 端点（cookbook 是自建中转），LiveKit 是第三方插件；「$0.004 文本输入」单位是每条客户端 `conversation.item.create`；开 server_vad 时按**连接时长**计费、静音也算（docs.x.ai/developers/models/speech-to-speech）。
