@@ -214,7 +214,14 @@ func cleanText(s string) string {
 	s = reFence.ReplaceAllString(s, " ")
 	s = reDropLine.ReplaceAllString(s, "")
 	s = reLineMark.ReplaceAllString(s, "")
-	s = reInline.ReplaceAllString(s, "代码")
+	// Short names in backticks (`rex-voice`, `/model`) are words worth saying; longer snippets are not.
+	s = reInline.ReplaceAllStringFunc(s, func(m string) string {
+		inner := strings.Trim(m, "`")
+		if len([]rune(inner)) <= 24 && !strings.ContainsAny(inner, " \t(){}=;") && strings.Count(inner, "/") <= 1 {
+			return inner
+		}
+		return "代码"
+	})
 	s = reURL.ReplaceAllString(s, "链接")
 	s = reHomePath.ReplaceAllString(s, "某文件")
 	s = reAbsPath.ReplaceAllString(s, "${1}某文件")

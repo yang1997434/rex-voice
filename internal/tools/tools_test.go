@@ -291,8 +291,8 @@ func checkVoiceSummary(t *testing.T, s claudeSummary, verbose bool) {
 	if !strings.HasPrefix(s.Asked, "我最近在想一件事情") || strings.Contains(s.Asked, "\n") || len([]rune(s.Asked)) > 80 {
 		t.Errorf("asked %q", s.Asked)
 	}
-	// Newest assistant text is "新会话已经在 `rex-voice` 目录里起来了…"; inline code is not read out.
-	if s.Reply != "新会话已经在 代码 目录里起来了，正在给它发开场指令。" {
+	// Newest assistant text is "新会话已经在 `rex-voice` 目录里起来了…"; a short name in backticks is kept as a word.
+	if s.Reply != "新会话已经在 rex-voice 目录里起来了，正在给它发开场指令。" {
 		t.Errorf("reply %q", s.Reply)
 	}
 	if !verbose {
@@ -333,13 +333,13 @@ func TestReadClaudeVerboseKeepsDetail(t *testing.T) {
 
 func TestCleanText(t *testing.T) {
 	in := "## 结论\n" +
-		"- 门禁**全绿**，改了 `internal/tools/claude.go` 和 /Users/andy/data/claude/rex-voice/docs/protocol.md\n" +
+		"- 门禁**全绿**，改了 `internal/tools/claude.go`（`rex-voice` 仓，跑 `go test ./...`）和 /Users/andy/data/claude/rex-voice/docs/protocol.md\n" +
 		"* 配置在 ~/.claude/settings.json，详情见 https://example.com/a/b?x=1 。\n" +
 		"```go\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n```\n" +
 		"| 项 | 结果 |\n|---|---|\n| gofmt | ok |\n" +
 		"---\n" +
 		"可以用 /model 换模型，rex-voice 不受影响。"
-	want := "结论 门禁全绿，改了 代码 和 某文件 配置在 某文件，详情见 链接 。 可以用 /model 换模型，rex-voice 不受影响。"
+	want := "结论 门禁全绿，改了 代码（rex-voice 仓，跑 代码）和 某文件 配置在 某文件，详情见 链接 。 可以用 /model 换模型，rex-voice 不受影响。"
 	if got := cleanText(in); got != want {
 		t.Errorf("cleanText =\n%q\nwant\n%q", got, want)
 	}
