@@ -34,3 +34,10 @@
 - [ ] 音色试听（`voice.preview`，Mac 端 2026-11-02 做完）：OpenAI、Qwen 国际站真跑过（`go test -tags manual -run TestPreviewReal ./internal/call/`）；Gemini、Grok 没真跑。Grok 语音模式下 `SendText` 是否直接出音频没核（每条 `conversation.item.create` 另收 $0.004，外加连接分钟），上 Grok 试听前先真跑一次。
 - [x] 已做（用户 2026-11-02 真机：展开后两列正常）iPhone Duo 内屏 / 横屏没有真实截图：Device Hub 只能 GUI 操作，osascript 被辅助功能权限挡住（2026-11-02）。要么用户给终端开「辅助功能」+「自动化」权限后补拍，要么以用户真机（0.2.1）验收清单第 13 条为准。
 - [ ] 配对页横屏时扫描框和底部引导卡片只差约 1pt（coder 2026-11-02 报），真机横屏看一眼。
+
+## 接着从哪做（2026-11-02 凌晨收口）
+
+- 状态：main 2979ef9；TestFlight 0.2.1（build 202611020816）装在用户 iPhone Duo 上，配对、试听、Duo 两列、四家通话都真机过了；Mac 服务 `~/.local/bin/rex-voiced` 是 main 的开发构建、launchd 在跑；中继生产版本仍是 2026-11-01 部署的那个（本批没改中继）。
+- 下一步（用户 2026-11-02 定）：**功能和语音对话实测**——按 CLAUDE.md「真机验收清单」1–13 条逐条过，重点是真实用法：读 Rex 窗格 / Claude 进展、往会话发指令、语音挂断、打断、锁屏 10 分钟、蓝牙、静音挂断、Mac 离线恢复、网络切换。每条记结果进 docs/releases.md「真机反馈」，问题回派 coder。
+- 候选：Grok 试听真跑一次；局域网直连（等点头）；Gemini 默认排序看用户反馈；配对页横屏 1pt 间距。
+- 未答：`secret-add LOGIN_KEYCHAIN_PASSWORD`；report-publish 的 rsync 修法；Duo 内屏模拟器截图要辅助功能权限（真机已验，可不做）。
