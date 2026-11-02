@@ -55,6 +55,7 @@ var (
 	backoffMax     = 30 * time.Second
 	writeTimeout   = 10 * time.Second
 	dialTimeout    = 15 * time.Second
+	previewTimeout = 20 * time.Second       // a whole voice.preview, dial included
 	fillEvery      = 20 * time.Millisecond  // silence fill: check interval
 	fillAfter      = 200 * time.Millisecond // silence fill: start only after this gap, so relay jitter does not splice zeros into speech
 	fillFor        = 5 * time.Second        // silence fill: stop this long after the last real frame
@@ -75,6 +76,7 @@ type server struct {
 	rx, tx    *pair.Cipher      // nil until both salts are known
 	helloOK   bool
 	call      *callState
+	preview   *previewState // nil unless a voice.preview is running
 	nextSID   int
 }
 
@@ -115,6 +117,7 @@ func Run(ctx context.Context, cfg Config) error {
 		select {
 		case <-ctx.Done():
 			s.endCall("error")
+			s.stopPreview()
 			if s.ws != nil {
 				s.ws.Close()
 			}
@@ -229,8 +232,9 @@ func (s *server) connDown(ws *websocket.Conn) {
 }
 
 // resetPeer forgets the phone's salt and keys; the call (if any) survives so a phone that
-// reconnects quickly can carry on, and the idle timer ends it otherwise.
+// reconnects quickly can carry on, and the idle timer ends it otherwise. A voice preview does not.
 func (s *server) resetPeer() {
+	s.stopPreview()
 	s.seen, s.rx, s.tx, s.helloOK = nil, nil, nil, false
 }
 
@@ -348,6 +352,8 @@ func (s *server) onControl(plain []byte) {
 	switch m.T {
 	case "call.start":
 		s.startCall(m.startReq)
+	case "voice.preview":
+		s.startPreview(m.startReq)
 	case "call.end":
 		s.endCall("user")
 	default:

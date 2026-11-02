@@ -80,6 +80,10 @@ func (s *server) startCall(r startReq) {
 		s.sendCtl(map[string]any{"t": "status", "state": c.state})
 		return
 	}
+	if s.preview != nil {
+		s.sendCtl(map[string]any{"t": "preview", "state": "error", "msg": "已取消"})
+		s.stopPreview()
+	}
 	var vc voice.Config
 	if !s.cfg.Echo {
 		var err error
@@ -222,11 +226,16 @@ func (s *server) setState(c *callState, state string) {
 // onModelAudio cuts model audio into ≤ 960-byte frames.
 func (s *server) onModelAudio(c *callState, pcm []byte) {
 	s.setState(c, "speaking")
-	c.rem = append(c.rem, pcm...)
-	for len(c.rem) >= frameBytes {
-		s.sendAudio(c.rem[:frameBytes])
-		c.rem = c.rem[frameBytes:]
+	c.rem = s.sendFrames(append(c.rem, pcm...))
+}
+
+// sendFrames sends the whole 960-byte frames of buf and returns the shorter tail.
+func (s *server) sendFrames(buf []byte) []byte {
+	for len(buf) >= frameBytes {
+		s.sendAudio(buf[:frameBytes])
+		buf = buf[frameBytes:]
 	}
+	return buf
 }
 
 func (s *server) flushAudio(c *callState) {
@@ -310,6 +319,9 @@ func (s *server) onFillTick(now time.Time) {
 func (s *server) onTick(now time.Time) {
 	if s.ws != nil && now.Sub(s.lastWrite) >= keepaliveEvery {
 		s.writeRaw(pair.KeepaliveFrame())
+	}
+	if p := s.preview; p != nil && now.Sub(p.t0) >= previewTimeout {
+		s.failPreview("超时")
 	}
 	c := s.call
 	if c == nil {

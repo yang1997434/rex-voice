@@ -31,3 +31,4 @@
 - [x] 已做（用户 2026-11-02 定：接受 40 MB、640px）形象资源进 app 包；上架前再看要不要按需下载。
 - [ ] 第三方参考图（aigengtu 三视图、ZipZipPipe 插画、moegirl 快照）只在本机 `docs/design-specs/personas/_refs/`，已 gitignore；换机器要重新按各 `source.md` 下载。
 - [ ] Qwen 国际站默认：国内网络下 audio-3.1-plus 首包延迟没量；A/B 时和 3.8（北京）对比记 docs/releases.md。
+- [ ] 音色试听（`voice.preview`，Mac 端 2026-11-02 做完）：OpenAI、Qwen 国际站真跑过（`go test -tags manual -run TestPreviewReal ./internal/call/`）；Gemini、Grok 没真跑。Grok 语音模式下 `SendText` 是否直接出音频没核（每条 `conversation.item.create` 另收 $0.004，外加连接分钟），上 Grok 试听前先真跑一次。
