@@ -1,0 +1,7 @@
+    1 Mon Oct 19 21:13:43 2026     /sbin/launchd
+  440 Mon Oct 19 21:22:37 2026     /usr/libexec/logd
+  442 Mon Oct 19 21:22:37 2026     /usr/libexec/UserEventAgent (System)
+62018 Thu Oct 22 05:41:48 2026     /Users/andy/data/claude/geo/soarank-api/.venv/bin/python3 -c from multiprocessing.resource_tracker import main;main(19)
+41052 Sun Nov  1 01:21:06 2026     claude --dangerously-skip-permissions
+  420 Sat Oct 31 07:45:30 2026     claude --dangerously-skip-permissions
+26673 Sun Nov  1 18:19:32 2026     claude --dangerously-skip-permissions

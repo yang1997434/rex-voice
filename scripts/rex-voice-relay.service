@@ -1,0 +1,15 @@
+[Unit]
+Description=rex-voice relay (pairs phone and Mac WebSockets)
+After=network.target
+
+[Service]
+DynamicUser=yes
+ExecStart=/opt/rex-voice/rex-voice-relay -listen 127.0.0.1:8790
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -14,7 +14,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 
 ## 规矩
 
-- Go 1.27，只用标准库 + `golang.org/x/*`（WebSocket 用 `golang.org/x/net/websocket` 或 `nhooyr.io/websocket` 二选一，定了写在这里，待定）。`gofmt -l . && go vet ./... && go test ./...` 是门禁。
+- Go 1.27，只用标准库 + `golang.org/x/*`，唯一例外 `rsc.io/qr`（终端二维码，纯 Go 无依赖，2026-11-01 定）（WebSocket 用 `golang.org/x/net/websocket`，2026-11-01 定：只转发二进制帧、不需要 ping 控制，够用且在 x/* 范围内；模块路径 `github.com/yang1997434/rex-voice`）。`gofmt -l . && go vet ./... && go test ./...` 是门禁。
 - Swift 6 / SwiftUI，iOS 18 起，只用系统框架（AVAudioEngine、CryptoKit、VisionKit 扫码、Network）。不引第三方包，不用 WebRTC。构建用 `xcodebuild`，没有 Xcode GUI。
 - `~/data/archive/claude-terminal-20261029` 里的旧 iOS 项目是无许可的私有 fork：**代码一行不抄**，只参考发版做法（见 `docs/plan-2026-11-01.md`「Context」）。
 - 工具层（`internal/tools`）是注册表，加新能力（AppleScript、computer-use）只加一组、不改调用方。
@@ -23,7 +23,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 
 ## 部署
 
-- **中继（ccs-maruiao）**：改生产，先要用户明文说「部署 rex-voice 中继」。步骤：本机 `GOOS=linux GOARCH=amd64 go build` → `scp` 到 `/opt/rex-voice/` → `systemctl restart rex-voice-relay` → `curl https://r.maruiao.top/_voice/healthz`。nginx 片段在 `scripts/nginx-voice.conf`，改 nginx 前先备份原文件。按总纲「部署分档」走：只换二进制算热修档。
+- **中继（ccs-maruiao）**：改生产，先要用户明文说「部署 rex-voice 中继」。步骤：本机 `GOOS=linux GOARCH=amd64 go build` → `scp` 到 `/opt/rex-voice/` → `systemctl restart rex-voice-relay` → `curl -A rex-voice-check https://r.maruiao.top/_voice/healthz`（不带 UA 会被该站的反爬 403）。中继以 systemd `DynamicUser` 跑、只听 `127.0.0.1:8790`。nginx 片段在 `scripts/nginx-voice.conf`，改 nginx 前先备份原文件。按总纲「部署分档」走：只换二进制算热修档。
 - **Mac 服务**：`scripts/install-launchd.sh`，本机、可随时回退，不算生产。
 - **iOS**：`scripts/build-ios.sh <版本>`，用 ASC Admin key（`flow-cred ASC_ADMIN_KEY_ID / ASC_ISSUER_ID / ASC_ADMIN_KEY_PATH`），team `KAA6GJ59XS`，bundle id `com.maruiao.rexvoice`。发前先 `security unlock-keychain`，否则 archive 会卡死在签名。
 

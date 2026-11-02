@@ -1,0 +1,12 @@
+{
+  "sessions": [
+    {
+      "session_id": "session:01a19207-2591-7b3b-9840-ae5ae8cd1da6",
+      "label": "rex-voice-dev"
+    },
+    {
+      "session_id": "session:01a19764-f868-799c-87c5-22b8d46ab962",
+      "label": "jobs"
+    }
+  ]
+}

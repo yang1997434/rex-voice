@@ -1,0 +1,34 @@
+{
+  "blocks": [
+    {
+      "block_id": "block:01a1926c-0d0e-7971-951b-d8b231bdd009",
+      "label": "shell",
+      "creator_name": "com.superlogical.terminal",
+      "flavor": "com.superlogical.terminal.shell",
+      "host_id": "6bf48b18-b78c-4f89-bb86-7d9f711bffdc",
+      "placement": "placed",
+      "window_id": "window:01a1926c-0d38-7b00-9220-4256b9b2b00d",
+      "owner": "client:01a199b1-abf1-7328-b87b-5b2fde5553ef"
+    },
+    {
+      "block_id": "block:01a19632-9cf6-70cf-be07-cf46bee0ad5f",
+      "label": "shell",
+      "creator_name": "com.superlogical.terminal",
+      "flavor": "com.superlogical.terminal.shell",
+      "host_id": "6bf48b18-b78c-4f89-bb86-7d9f711bffdc",
+      "placement": "placed",
+      "window_id": "window:01a19632-9d02-79fe-97fc-967fa360fa1a",
+      "owner": "client:01a199b1-abf1-7328-b87b-5b2fde5553ef"
+    },
+    {
+      "block_id": "block:01a19a0e-06a0-70cb-8e2c-311f5704d684",
+      "label": "rex-voice",
+      "creator_name": "com.superlogical.terminal",
+      "flavor": "com.superlogical.terminal.shell",
+      "host_id": "6bf48b18-b78c-4f89-bb86-7d9f711bffdc",
+      "placement": "placed",
+      "window_id": "window:01a19a0e-06ac-7989-a669-695a5539ef61",
+      "owner": "client:01a199b1-abf1-7328-b87b-5b2fde5553ef"
+    }
+  ]
+}
