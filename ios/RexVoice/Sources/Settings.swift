@@ -217,7 +217,7 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Short name under the rail logo and the wheel's VoiceOver label.
+    /// Short name under the rail logo, on the wheel and in the settings grid.
     var shortName: String {
         switch self {
         case .openai: "GPT"

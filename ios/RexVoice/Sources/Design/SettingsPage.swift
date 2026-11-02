@@ -243,7 +243,7 @@ struct SettingsPage: View {
                     Button { settings.provider = p } label: {
                         HStack(spacing: 8) {
                             ProviderLogo(provider: p, size: 24)
-                            Text(p.title).font(.subheadline.weight(.medium)).lineLimit(1)
+                            Text(p.shortName).font(.subheadline.weight(.medium)).lineLimit(1)
                             Spacer(minLength: 0)
                         }
                         .padding(.horizontal, 10)

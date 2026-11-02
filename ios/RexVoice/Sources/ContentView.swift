@@ -3,14 +3,15 @@ import SwiftUI
 
 /// Main screen. Narrow screens (design J, final 2026-11-02): idle is the big persona card (lit edge, inner glow,
 /// grain, state-colored light), a status line and the call button; in a call the card shrinks to a banner over the
-/// dialog. Landscape / Duo unfolded keep design H's two columns. A rail on the right holds the current provider's logo
-/// (hold it for the wheel) plus pairing / settings; on the Duo outer screen it lives in the status-bar column.
+/// dialog. The Duo inner screen gets J too (at most 640pt wide, centered); only landscape iPhones (compact height) keep
+/// design H's two columns. A rail on the right holds the current provider's logo (hold it for the wheel) plus pairing /
+/// settings; wherever the status bar is a column down the right edge (Duo, both screens) the rail is centered in it.
 struct ContentView: View {
     @Environment(CallController.self) private var controller
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
     @State private var sheet: Sheet?
     @State private var callStart: Date?
     /// Provider whose missing key is being asked about before a call.
@@ -43,21 +44,30 @@ struct ContentView: View {
         let mood = Mood(state, dark: scheme == .dark)
         // Laid out from the live size every pass, so Duo fold / unfold and rotation re-flow it.
         GeometryReader { geo in
-            let wide = hSize == .regular || geo.size.width > geo.size.height
-            // Duo outer screen: the status bar is a column down the right edge with only the clock / Wi-Fi / battery
-            // at its top. Landscape iPhones also have side insets (the Dynamic Island), so only a portrait screen counts.
+            let wide = vSize == .compact
+            // Duo: the status bar is a column down the right edge with only the clock / Wi-Fi / battery at its top; the
+            // rail is centered in that inset so it lines up under them. Landscape iPhones also have side insets (the
+            // Dynamic Island), so compact-height screens never count.
             let column = !wide && geo.safeAreaInsets.trailing >= 56
+            let insets = geo.safeAreaInsets
+            // Where the provider dial may draw: the whole window width, between the status bar and the home indicator.
+            let room = CGRect(x: 0, y: insets.top, width: geo.size.width + insets.leading + insets.trailing,
+                              height: geo.size.height)
             // No status bar above us (Duo outer screen, landscape): the top keeps its own margin from the edge.
             let topGap = max(0, 14 - geo.safeAreaInsets.top)
             ZStack {
                 HStack(spacing: 12) {
                     Group {
-                        if wide { twoColumns(phase, state: state, mood: mood) } else { dialogJ(phase, state: state, mood: mood) }
+                        if wide {
+                            twoColumns(phase, state: state, mood: mood)
+                        } else {
+                            dialogJ(phase, state: state, mood: mood).frame(maxWidth: 640)
+                        }
                     }
                     .overlay {
                         if wheelOpen { Color.clear.contentShape(.rect).onTapGesture { wheelOpen = false } }
                     }
-                    if !column { sideRail.frame(maxHeight: .infinity, alignment: .bottom) }
+                    if !column { sideRail(room).frame(maxHeight: .infinity, alignment: .bottom) }
                 }
                 .padding(.top, topGap)
                 .padding(.leading, 16)
@@ -69,7 +79,7 @@ struct ContentView: View {
                 if column {
                     // Bottom-aligned, level with the call button, so it stays clear of the status icons (and whatever
                     // the system grows below them) at the column's top.
-                    sideRail
+                    sideRail(room)
                         .padding(.bottom, 8)
                         .frame(width: geo.safeAreaInsets.trailing)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
@@ -120,7 +130,7 @@ struct ContentView: View {
             .padding(.horizontal, 8)
     }
 
-    /// Regular width (Duo unfolded) or landscape: the card keeps its portrait 0.9:1 on the left, the rest stacks on
+    /// Landscape iPhones (compact height): the card keeps its portrait 0.9:1 on the left, the rest stacks on
     /// the right with the call button level with the card's bottom.
     private func twoColumns(_ phase: CallPhase, state: PersonaState, mood: Mood) -> some View {
         GeometryReader { row in
@@ -234,9 +244,9 @@ struct ContentView: View {
     }
 
     /// 56pt rail, bottom-aligned: the current provider's logo and name (hold for the wheel), then pairing and settings.
-    private var sideRail: some View {
+    private func sideRail(_ room: CGRect) -> some View {
         VStack(spacing: 8) {
-            ProviderWheel(open: $wheelOpen, cell: 48)
+            ProviderWheel(open: $wheelOpen, cell: 48, room: room)
             V2IconButton(title: "配对", symbol: "qrcode.viewfinder") { sheet = .pair }
             V2IconButton(title: "设置", symbol: "slider.horizontal.3") { sheet = .settings }
         }
