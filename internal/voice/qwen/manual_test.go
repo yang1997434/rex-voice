@@ -69,7 +69,7 @@ func manualCfg(t *testing.T, p *eventPrinter, h voice.Handlers) voice.Config {
 	if key == "" {
 		t.Skip("DASHSCOPE_API_KEY not set")
 	}
-	return voice.Config{Provider: voice.Qwen, Key: key, Instructions: "你是电话助手，用中文一句话回答。问时间就调 get_time。",
+	return voice.Config{Provider: voice.Qwen, Key: key, Model: os.Getenv("QWEN_MODEL"), Instructions: "你是电话助手，用中文一句话回答。问时间就调 get_time。",
 		Logger: slog.New(p), UsageLog: usageWriter{t}, Handlers: h}
 }
 

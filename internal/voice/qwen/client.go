@@ -19,12 +19,16 @@ import (
 )
 
 const (
-	defaultURL   = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"          // 11-01 实测仍可用
+	defaultURL   = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"          // 11-01 实测仍可用（北京）
+	intlURL      = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime"     // 国际站（新加坡）key 只能连这个
 	workspaceURL = "wss://%s.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime" // Extra workspace
 	asrModel     = "qwen3-asr-flash-realtime"                                 // the only accepted value
 	maxAge       = 120 * time.Minute                                          // Qwen's session cap
 	maxTurns     = 50
 )
+
+// endpoints is the default dial order (Beijing, then international); tests point it at fakes.
+var endpoints = []string{defaultURL, intlURL}
 
 // Variables so tests can shorten them.
 var (
@@ -80,28 +84,48 @@ func dial(ctx context.Context, cfg voice.Config) (*Session, error) {
 	if cfg.Voice == "" {
 		cfg.Voice = "Tina" // the server's own default (Chelsie) is rejected by 3.8, even in text mode
 	}
-	u, hint := cfg.Extra["url"], ""
-	switch ws := cfg.Extra["workspace"]; {
-	case u != "":
+	if cfg.Voice == "Tina" && strings.Contains(cfg.Model, "audio-3.1") {
+		cfg.Voice = "longanqian" // audio-3.1 has its own voice list (longan*, *_v3.1); 3.8's Tina is rejected (11-01)
+	}
+	// A key belongs to one region and the other region answers 401; without Extra url / workspace /
+	// region the Beijing endpoint is tried first and the international one on failure.
+	var urls []string
+	hint := ""
+	switch ws, region := cfg.Extra["workspace"], cfg.Extra["region"]; {
+	case cfg.Extra["url"] != "":
+		urls = []string{cfg.Extra["url"]}
 	case ws != "":
 		if strings.ContainsAny(ws, "/.:@?#") {
 			return nil, fmt.Errorf("qwen: Extra workspace %q is not a workspace id", ws)
 		}
-		u = fmt.Sprintf(workspaceURL, ws)
+		urls = []string{fmt.Sprintf(workspaceURL, ws)}
+	case region == "intl":
+		urls = []string{endpoints[1]}
+	case region == "cn":
+		urls = []string{endpoints[0]}
 	default:
-		u, hint = defaultURL, "（旧端点连不上时，在 Extra workspace 填百炼业务空间 ID 改走新端点）"
+		urls, hint = endpoints, "（两个地域都连不上：key 不对，或在 Extra workspace 填百炼业务空间 ID 改走新端点）"
 	}
 	log := cfg.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	wc, err := websocket.NewConfig(u+"?model="+url.QueryEscape(cfg.Model), "https://dashscope.aliyuncs.com")
-	if err != nil {
-		return nil, fmt.Errorf("qwen: %w", err)
+	var ws *websocket.Conn
+	var err error
+	for _, u := range urls {
+		var wc *websocket.Config
+		wc, err = websocket.NewConfig(u+"?model="+url.QueryEscape(cfg.Model), "https://dashscope.aliyuncs.com")
+		if err != nil {
+			return nil, fmt.Errorf("qwen: %w", err)
+		}
+		wc.Header.Set("Authorization", "Bearer "+cfg.Key)
+		wc.Header.Set("User-Agent", "rex-voiced/"+cfg.Version)
+		if ws, err = wc.DialContext(ctx); err == nil {
+			log.Info("qwen: connected", "endpoint", u)
+			break
+		}
+		log.Info("qwen: dial failed, trying next endpoint", "endpoint", u, "err", err)
 	}
-	wc.Header.Set("Authorization", "Bearer "+cfg.Key)
-	wc.Header.Set("User-Agent", "rex-voiced/"+cfg.Version)
-	ws, err := wc.DialContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("qwen: dial: %w%s", err, hint)
 	}
@@ -159,13 +183,22 @@ func (s *Session) sessionConfig() map[string]any {
 		c["modalities"] = []string{"text"}
 		return c
 	}
-	c["turn_detection"] = map[string]any{"type": "semantic_vad"}
+	c["turn_detection"] = map[string]any{"type": turnDetection(s.cfg.Model)}
 	if s.cfg.Transcribe {
 		c["input_audio_transcription"] = map[string]any{"model": asrModel}
 	} else {
 		c["input_audio_transcription"] = nil // the server turns a default transcriber on otherwise
 	}
 	return c
+}
+
+// turnDetection picks the VAD the model accepts: qwen-audio-3.1 rejects semantic_vad and offers
+// server_vad / smart_turn / smart_turn_v2 (11-01, intl endpoint); qwen3.8-omni takes semantic_vad.
+func turnDetection(model string) string {
+	if strings.Contains(model, "audio-3.1") {
+		return "smart_turn_v2"
+	}
+	return "semantic_vad"
 }
 
 // Age is the time since Dial.
@@ -356,11 +389,12 @@ func (s *Session) loop() {
 			}
 		case "input_audio_buffer.speech_started":
 			// No truncate in Qwen: stop the answer and drop its late audio.
+			// Only cancel a live answer: audio-3.1 errors on a cancel with nothing active (11-01).
 			if s.resp != "" {
 				s.cut, s.resp = s.resp, ""
-			}
-			if err := s.Cancel(); err != nil {
-				s.sendFailed("response.cancel", err)
+				if err := s.Cancel(); err != nil {
+					s.sendFailed("response.cancel", err)
+				}
 			}
 			if h.SpeechStarted != nil {
 				h.SpeechStarted()
@@ -376,9 +410,10 @@ func (s *Session) loop() {
 }
 
 // onError reports a server error and ends the session, except a cancel with nothing to cancel
-// (11-01 实测：「Cannot cancel response before response.created」，会话照常继续).
+// (11-01 实测：3.8「Cannot cancel response before response.created」、audio-3.1「Conversation has no
+// active response」，会话照常继续).
 func (s *Session) onError(e *apiError) {
-	if e != nil && strings.Contains(strings.ToLower(e.Message), "cancel") {
+	if m := strings.ToLower(e.String()); e != nil && (strings.Contains(m, "cancel") || strings.Contains(m, "no active response")) {
 		s.log.Debug("qwen: benign cancel error", "message", e.Message)
 		return
 	}

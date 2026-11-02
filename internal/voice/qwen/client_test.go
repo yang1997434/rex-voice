@@ -67,7 +67,10 @@ const updated = `{"type":"session.updated","session":{}}`
 
 func (f *fake) cfg(cfg voice.Config) voice.Config {
 	cfg.Extra = map[string]string{"url": "ws" + strings.TrimPrefix(f.srv.URL, "http")}
-	cfg.Key, cfg.Model = "test-key", testModel
+	cfg.Key = "test-key"
+	if cfg.Model == "" {
+		cfg.Model = testModel
+	}
 	return cfg
 }
 
@@ -150,7 +153,7 @@ func sessionUpdate(t *testing.T, cfg voice.Config) map[string]any {
 	if got := f.header.Get("User-Agent"); got != "rex-voiced/dev" {
 		t.Errorf("User-Agent = %q", got)
 	}
-	if f.query != "model="+testModel {
+	if want := "model=" + cfg.Model; cfg.Model != "" && f.query != want || cfg.Model == "" && f.query != "model="+testModel {
 		t.Errorf("query = %q", f.query)
 	}
 	return ev["session"].(map[string]any)
@@ -186,6 +189,12 @@ func TestSessionUpdateVoice(t *testing.T) {
 	}
 	if got := js(sess["input_audio_transcription"]); got != `{"model":"qwen3-asr-flash-realtime"}` {
 		t.Errorf("input_audio_transcription = %s", got)
+	}
+	if got := turnDetection("qwen-audio-3.1-realtime-plus"); got != "smart_turn_v2" {
+		t.Errorf("audio-3.1 turn_detection = %s", got)
+	}
+	if got := js(sessionUpdate(t, voice.Config{Model: "qwen-audio-3.1-realtime-plus", Voice: "Tina"})["audio"]); !strings.Contains(got, `"voice":"longanqian"`) {
+		t.Errorf("audio-3.1 default voice: %s", got)
 	}
 	if got := js(sess["audio"]); !strings.Contains(got, `"voice":"Cici"`) {
 		t.Errorf("audio = %s", got)
@@ -265,6 +274,15 @@ func TestSpeechStartedCancelsAndDropsLateAudio(t *testing.T) {
 	if got := wait(t, audio, "AudioDelta"); got[0] != 3 {
 		t.Errorf("late audio of the interrupted answer was played: %v", got)
 	}
+}
+
+func TestSpeechStartedWithoutAnswerSendsNoCancel(t *testing.T) {
+	f := newFake(t, updated)
+	speech := make(chan struct{}, 1)
+	f.dial(t, voice.Config{Handlers: voice.Handlers{SpeechStarted: func() { speech <- struct{}{} }}})
+	f.push(t, `{"type":"input_audio_buffer.speech_started"}`)
+	wait(t, speech, "SpeechStarted")
+	f.quiet(t) // audio-3.1 errors on a cancel with nothing active
 }
 
 func TestToolBatchOneCreate(t *testing.T) {
@@ -358,7 +376,8 @@ func TestErrorEndsSession(t *testing.T) {
 	f := newFake(t, updated)
 	errs := make(chan error, 3)
 	s := f.dial(t, voice.Config{Handlers: voice.Handlers{Error: func(e error) { errs <- e }}})
-	f.push(t, `{"type":"error","error":{"type":"invalid_request_error","message":"Cannot cancel response before response.created","param":"response"}}`)
+	f.push(t, `{"type":"error","error":{"type":"invalid_request_error","message":"Cannot cancel response before response.created","param":"response"}}`,
+		`{"type":"error","error":{"type":"invalid_value","message":"Conversation has no active response."}}`)
 	f.quiet(t)
 	select {
 	case <-s.Done():
@@ -402,5 +421,25 @@ func TestUsageLine(t *testing.T) {
 	}
 	if l.Model != testModel || l.Input != 693 || l.AudioOut != 86 || l.TextOut != 25 || l.USD != u.USD || l.Unpriced {
 		t.Errorf("usage line = %+v", l)
+	}
+}
+
+// A Beijing key must not be sent to the international endpoint and vice versa: the first endpoint
+// that completes the handshake wins, the one that refuses is skipped.
+func TestDialFallsBackToSecondEndpoint(t *testing.T) {
+	f := newFake(t, `{"type":"session.updated"}`)
+	saved := endpoints
+	endpoints = []string{"ws://127.0.0.1:1/api-ws/v1/realtime", "ws" + strings.TrimPrefix(f.srv.URL, "http")}
+	t.Cleanup(func() { endpoints = saved })
+	cfg := f.cfg(voice.Config{})
+	delete(cfg.Extra, "url")
+	s, err := dial(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	endpoints = []string{"ws://127.0.0.1:1/api-ws/v1/realtime", "ws://127.0.0.1:2/api-ws/v1/realtime"}
+	if _, err := dial(context.Background(), cfg); err == nil {
+		t.Fatal("dial succeeded with no reachable endpoint")
 	}
 }
