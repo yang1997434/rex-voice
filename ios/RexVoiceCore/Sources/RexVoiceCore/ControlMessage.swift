@@ -8,6 +8,8 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     /// All four optional; nil fields are left out of the JSON and the Mac falls back to its own defaults.
     case callStart(provider: String?, model: String?, voice: String?, apiKey: String?)
     case callEnd
+    /// Voice sample outside a call; same optional fields as `callStart`.
+    case voicePreview(provider: String?, model: String?, voice: String?, apiKey: String?)
     // Mac -> phone
     /// `detail` is optional: the Mac side currently sends status without it.
     case status(state: String, detail: String?)
@@ -15,6 +17,8 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case interrupt
     case hangUp(reason: String)
     case error(msg: String)
+    /// Voice sample progress: connecting / playing / done / error (`msg` set on error).
+    case preview(state: String, msg: String?)
     /// Any `t` this build does not know; decoding never throws for it.
     case unknown(String)
 
@@ -37,6 +41,11 @@ public enum ControlMessage: Codable, Equatable, Sendable {
                               voice: try c.decodeIfPresent(String.self, forKey: .voice),
                               apiKey: try c.decodeIfPresent(String.self, forKey: .apiKey))
         case "call.end": self = .callEnd
+        case "voice.preview":
+            self = .voicePreview(provider: try c.decodeIfPresent(String.self, forKey: .provider),
+                                 model: try c.decodeIfPresent(String.self, forKey: .model),
+                                 voice: try c.decodeIfPresent(String.self, forKey: .voice),
+                                 apiKey: try c.decodeIfPresent(String.self, forKey: .apiKey))
         case "status":
             self = .status(state: try c.decode(String.self, forKey: .state),
                            detail: try c.decodeIfPresent(String.self, forKey: .detail))
@@ -45,6 +54,8 @@ public enum ControlMessage: Codable, Equatable, Sendable {
         case "interrupt": self = .interrupt
         case "hang_up": self = .hangUp(reason: try c.decode(String.self, forKey: .reason))
         case "error": self = .error(msg: try c.decode(String.self, forKey: .msg))
+        case "preview":
+            self = .preview(state: try c.decode(String.self, forKey: .state), msg: try c.decodeIfPresent(String.self, forKey: .msg))
         default: self = .unknown(t)
         }
     }
@@ -64,6 +75,12 @@ public enum ControlMessage: Codable, Equatable, Sendable {
             try c.encodeIfPresent(voice, forKey: .voice)
             try c.encodeIfPresent(apiKey, forKey: .apiKey)
         case .callEnd: try c.encode("call.end", forKey: .t)
+        case let .voicePreview(provider, model, voice, apiKey):
+            try c.encode("voice.preview", forKey: .t)
+            try c.encodeIfPresent(provider, forKey: .provider)
+            try c.encodeIfPresent(model, forKey: .model)
+            try c.encodeIfPresent(voice, forKey: .voice)
+            try c.encodeIfPresent(apiKey, forKey: .apiKey)
         case let .status(state, detail):
             try c.encode("status", forKey: .t)
             try c.encode(state, forKey: .state)
@@ -79,6 +96,10 @@ public enum ControlMessage: Codable, Equatable, Sendable {
         case let .error(msg):
             try c.encode("error", forKey: .t)
             try c.encode(msg, forKey: .msg)
+        case let .preview(state, msg):
+            try c.encode("preview", forKey: .t)
+            try c.encode(state, forKey: .state)
+            try c.encodeIfPresent(msg, forKey: .msg)
         case let .unknown(t):
             try c.encode(t, forKey: .t)
         }

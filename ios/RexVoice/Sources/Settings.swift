@@ -103,6 +103,12 @@ final class AppSettings {
                    apiKey: try apiKey(for: provider))
     }
 
+    /// The same four fields as `callStart()`, for a voice sample.
+    func voicePreview() throws -> ControlMessage {
+        .voicePreview(provider: provider.rawValue, model: model(for: provider), voice: voice(for: provider),
+                      apiKey: try apiKey(for: provider))
+    }
+
     // MARK: Persona
 
     /// The picked persona, or the first available one when the stored id has no art (removed group, first launch).

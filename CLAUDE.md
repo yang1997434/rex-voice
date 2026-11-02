@@ -44,6 +44,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 9. 网络切换：蜂窝网下也能连上（不依赖 Surge / Tailscale）；通话中 Wi-Fi 切蜂窝，短暂「连接中…」后自己恢复，通话继续。
 10. 来电打断：通话中接一个电话或唤起 Siri，结束后回到 app，通话恢复（能听能说），或状态栏提示原因。
 11. 设置页填 Qwen 的 key 并选 Qwen 模型 → 通话 → Mac 日志 `call started` 行里 provider=qwen、phone_key=true
+12. 设置页选一个音色按试听 → 1–3 秒内听到一句打招呼、按钮经连接中 / 播放中回到试听；通话中按钮灰
 
 ## 哪些文档不能信
 
