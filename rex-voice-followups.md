@@ -22,7 +22,7 @@
 - [x] 已做（豆包 2026-11-01 用户定移除，代码已删，调研留档）豆包 3.0 真跑：等用户 `secret-add DOUBAO_API_KEY` 后跑 `DOUBAO_API_KEY=$(flow-cred DOUBAO_API_KEY) go test -tags manual -run Manual -v ./internal/voice/doubao`，核 4 处猜的字段（采样率键名 rate/sample_rate、usage 拆分、音色后缀 uranus/jupiter、是否要 response.create）。
 - [ ] Qwen：新端点（带 WorkspaceId）没真跑（国际站端点 11-01 已真跑，见 protocol §4.2）；audio-3.1 的 `smart_turn` 与 `smart_turn_v2` 差别没查、flash 档价格没录（plus 已录 prices.go）；被打断的回复全文仍进 RecentTurns（和 OpenAI 一样）；语音模式回复进行中 SendText 的报错行为未核实。
 - [ ] 豆包不支持文字输入：`rex-voiced chat -provider doubao` 不可用；空闲提示改为手机显示文字（34c6f02）。
-- [ ] 四家语音 A/B（OpenAI / Qwen 3.8 与 audio-3.1 / Gemini / Grok）等 iOS 定稿实现上 TestFlight 后跑，20 句中文指令，记 docs/releases.md。
+- [x] 已做（用户 2026-11-02 真机：延迟都行，音质 Qwen ≈ Grok > GPT，记 docs/releases.md）四家语音 A/B（OpenAI / Qwen 3.8 与 audio-3.1 / Gemini / Grok）等 iOS 定稿实现上 TestFlight 后跑，20 句中文指令，记 docs/releases.md。
 - [ ] 市场盘点页 /_r/7c04be05a07119c87544ad435850fff5/ 列的下一批候选：Gemini 3.8 Live、Grok Voice 3.0、StepAudio 3 Realtime（限免）；等用户定。
 - [ ] `report-publish` 在本机会先撞系统 openrsync（不认 --chmod）：脚本在 claude-stack 仓，建议改成 /opt/homebrew/bin/rsync，等用户点头。
 - [ ] iOS 设计稿 B、C 两版代码在定稿实现时删除，截图保留在 docs/design-specs/ios-liquid-glass/。
@@ -32,5 +32,5 @@
 - [ ] 第三方参考图（aigengtu 三视图、ZipZipPipe 插画、moegirl 快照）只在本机 `docs/design-specs/personas/_refs/`，已 gitignore；换机器要重新按各 `source.md` 下载。
 - [ ] Qwen 国际站默认：国内网络下 audio-3.1-plus 首包延迟没量；A/B 时和 3.8（北京）对比记 docs/releases.md。
 - [ ] 音色试听（`voice.preview`，Mac 端 2026-11-02 做完）：OpenAI、Qwen 国际站真跑过（`go test -tags manual -run TestPreviewReal ./internal/call/`）；Gemini、Grok 没真跑。Grok 语音模式下 `SendText` 是否直接出音频没核（每条 `conversation.item.create` 另收 $0.004，外加连接分钟），上 Grok 试听前先真跑一次。
-- [ ] iPhone Duo 内屏 / 横屏没有真实截图：Device Hub 只能 GUI 操作，osascript 被辅助功能权限挡住（2026-11-02）。要么用户给终端开「辅助功能」+「自动化」权限后补拍，要么以用户真机（0.2.1）验收清单第 13 条为准。
+- [x] 已做（用户 2026-11-02 真机：展开后两列正常）iPhone Duo 内屏 / 横屏没有真实截图：Device Hub 只能 GUI 操作，osascript 被辅助功能权限挡住（2026-11-02）。要么用户给终端开「辅助功能」+「自动化」权限后补拍，要么以用户真机（0.2.1）验收清单第 13 条为准。
 - [ ] 配对页横屏时扫描框和底部引导卡片只差约 1pt（coder 2026-11-02 报），真机横屏看一眼。
