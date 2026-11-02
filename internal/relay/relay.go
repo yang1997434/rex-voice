@@ -4,10 +4,13 @@ package relay
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +38,33 @@ type Hub struct {
 	writeTimeout time.Duration
 
 	Notifier Notifier // nil = notify frames are dropped; set before serving
+	Invites  []string // empty = no invite needed; otherwise /_voice/ws must carry one of these; set before serving
+}
+
+// ParseInvites splits RELAY_INVITES ("code1,code2"); each code must match the id format.
+func ParseInvites(s string) ([]string, error) {
+	var out []string
+	for _, c := range strings.Split(s, ",") {
+		if c = strings.TrimSpace(c); c == "" {
+			continue
+		}
+		if !idRe.MatchString(c) {
+			return nil, fmt.Errorf("invite #%d: want [A-Za-z0-9_-]{8,64}", len(out)+1)
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func (h *Hub) inviteOK(got string) bool {
+	if len(h.Invites) == 0 {
+		return true
+	}
+	ok := false
+	for _, c := range h.Invites { // no early exit, so timing does not tell which code matched
+		ok = subtle.ConstantTimeCompare([]byte(got), []byte(c)) == 1 || ok
+	}
+	return ok
 }
 
 func NewHub() *Hub {
@@ -65,6 +95,15 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		role, id := r.URL.Query().Get("role"), r.URL.Query().Get("id")
 		if (role != "mac" && role != "phone") || !idRe.MatchString(id) {
 			http.Error(w, "bad role or id", http.StatusBadRequest)
+			return
+		}
+		if !h.inviteOK(r.URL.Query().Get("invite")) {
+			ip := r.Header.Get("X-Forwarded-For") // set by nginx; the relay itself only listens on loopback
+			if ip == "" {
+				ip = r.RemoteAddr
+			}
+			log.Printf("bad invite role=%s id=%s ip=%s", role, id[:6], ip)
+			http.Error(w, "invite required", http.StatusForbidden)
 			return
 		}
 		// websocket.Server with nil Handshake skips the Origin check; native clients send none.

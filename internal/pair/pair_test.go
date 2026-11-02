@@ -220,13 +220,16 @@ func TestSaveLoad(t *testing.T) {
 func TestURL(t *testing.T) {
 	p, _ := Generate()
 	relay := "wss://r.maruiao.top/_voice/ws"
-	u, err := url.Parse(p.URL(relay))
+	u, err := url.Parse(p.URL(relay, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := u.Query()
 	if u.Scheme != "rexvoice" || u.Host != "pair" || q.Get("relay") != relay {
 		t.Fatalf("parsed %+v", u)
+	}
+	if q.Has("invite") {
+		t.Fatalf("empty invite written: %s", u)
 	}
 	var id [16]byte
 	var key [32]byte
@@ -235,11 +238,22 @@ func TestURL(t *testing.T) {
 	}
 }
 
+func TestURLWithInvite(t *testing.T) {
+	p, _ := Generate()
+	u, err := url.Parse(p.URL("wss://r.maruiao.top/_voice/ws", "test-code_1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := u.Query(); q.Get("invite") != "test-code_1" || q.Get("relay") != "wss://r.maruiao.top/_voice/ws" || q.Get("id") == "" || q.Get("key") == "" {
+		t.Fatalf("parsed %v", q)
+	}
+}
+
 // QRText must be a faithful picture of the code: light glyph halves where modules are white,
 // a 2-module light quiet zone, and one text row per two module rows.
 func TestQRText(t *testing.T) {
 	p, _ := Generate()
-	u := p.URL("wss://r.maruiao.top/_voice/ws")
+	u := p.URL("wss://r.maruiao.top/_voice/ws", "testcode1")
 	c, err := qr.Encode(u, qr.M)
 	if err != nil {
 		t.Fatal(err)

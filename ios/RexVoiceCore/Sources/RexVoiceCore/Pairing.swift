@@ -10,14 +10,18 @@ public struct Pairing: Sendable {
     public let id: Data
     public let key: SymmetricKey
     public let relay: URL
+    /// Relay invite code, sent as `invite=` when connecting; nil when the QR code has none (pairings made before 0.3.3).
+    public let invite: String?
 
-    public init(id: Data, key: SymmetricKey, relay: URL) {
+    public init(id: Data, key: SymmetricKey, relay: URL, invite: String? = nil) {
         self.id = id
         self.key = key
         self.relay = relay
+        self.invite = invite
     }
 
-    /// Parses `rexvoice://pair?relay=<ws(s) URL>&id=<b64url>&key=<b64url>`; id is 16 bytes, key 32, both unpadded base64url.
+    /// Parses `rexvoice://pair?relay=<ws(s) URL>&id=<b64url>&key=<b64url>[&invite=<code>]`; id is 16 bytes, key 32,
+    /// both unpadded base64url. The relay checks the invite, so it is passed through as is; empty = none.
     public static func parse(_ url: URL) throws -> Pairing {
         guard url.scheme == "rexvoice", url.host() == "pair",
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
@@ -29,7 +33,7 @@ public struct Pairing: Sendable {
         else { throw PairingError.badRelay }
         guard let id = value("id").flatMap(base64URLDecode), id.count == 16 else { throw PairingError.badID }
         guard let key = value("key").flatMap(base64URLDecode), key.count == 32 else { throw PairingError.badKey }
-        return Pairing(id: id, key: SymmetricKey(data: key), relay: relay)
+        return Pairing(id: id, key: SymmetricKey(data: key), relay: relay, invite: value("invite").flatMap { $0.isEmpty ? nil : $0 })
     }
 }
 

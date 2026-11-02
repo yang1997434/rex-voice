@@ -18,6 +18,7 @@ type Config struct {
 	Provider       string            `json:"provider,omitempty"`        // realtime voice provider: openai | qwen | gemini | grok
 	Model          string            `json:"model,omitempty"`           // provider's model; empty = the provider's default
 	Relay          string            `json:"relay,omitempty"`           // relay WebSocket URL
+	Invite         string            `json:"invite,omitempty"`          // relay invite code (RELAY_INVITES); empty = none sent
 	Voice          string            `json:"voice,omitempty"`           // empty = the provider's default
 	ProjectAliases map[string]string `json:"project_aliases,omitempty"` // project name → one-line description for the prompt
 	ForbidExtra    []string          `json:"forbid_extra,omitempty"`    // more words send_to_pane refuses, on top of the built-in list

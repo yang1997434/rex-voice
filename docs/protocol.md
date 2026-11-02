@@ -2,13 +2,14 @@
 
 ## 1. 配对
 
-- Mac：`rex-voiced pair` 生成 `id`（16 字节随机）和 `key`（32 字节随机），终端打二维码：`rexvoice://pair?relay=wss://r.maruiao.top/_voice/ws&id=<base64url>&key=<base64url>`；同时把 `{id, key}` 写 `~/Library/Application Support/rex-voice/pair.json`（0600）。
-- app 扫码后把三项存 Keychain（`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`，不同步 iCloud）。
+- Mac：`rex-voiced pair` 生成 `id`（16 字节随机）和 `key`（32 字节随机），终端打二维码：`rexvoice://pair?relay=wss://r.maruiao.top/_voice/ws&id=<base64url>&key=<base64url>[&invite=<邀请码>]`；同时把 `{id, key}` 写 `~/Library/Application Support/rex-voice/pair.json`（0600）。
+- 邀请码（2026-11-02，0.3.3）：中继配了 `RELAY_INVITES` 才需要（见第 2 节），由中继的维护者给。`rex-voiced pair -invite <码>` 把码写进 `config.json` 的 `invite` 并放进二维码；不带 `-invite` 时用 `config.json` 里的（所以 `pair -force` 重新出码会保留它），两处都没有就不带 `invite` 参数。码只许 `[A-Za-z0-9_-]{8,64}`，`pair` 不合格式直接报错。`serve` 连中继时带 `invite=<码>`。
+- app 扫码后把整条二维码文本（含 `invite`，没有就没有）存 Keychain（`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`，不同步 iCloud），连中继时有 `invite` 就带上。0.3.3 之前配对的手机没有码：中继开了邀请码后会被 403，app 提示「中继要邀请码，请在 Mac 上重新 pair 后扫码」并照常退避重连，要在 Mac 上 `rex-voiced pair -force -invite <码>` 重扫。
 - 一次性：Mac 收到第一个成功解密的握手帧后记 `paired_at`，之后再来一个声称是新设备的握手就拒（要换手机重新 `pair`）。
 
 ## 2. 中继
 
-- `GET /_voice/ws?role=mac|phone&id=<id>`，升级成 WebSocket。中继按 `id` 配对两端：一端连上等另一端，都在就双向透传二进制帧；任一端断，另一端收到 `present:false`、连接保持。同一 `id` 同一 role 只允许一条连接，新连顶掉旧连（旧连被关，对端不收 `present:false`）。`role` 只能是 `mac` / `phone`，`id` 只许 `[A-Za-z0-9_-]{8,64}`，否则 400 不升级；不校验 `Origin`。单帧上限 64 KiB，超了断那条连接；中继每次写有 10 s 超时，写不出去就关那一端。客户端发来的文本帧除下面「推送」两种外中继忽略。
+- `GET /_voice/ws?role=mac|phone&id=<id>[&invite=<码>]`，升级成 WebSocket。中继按 `id` 配对两端：一端连上等另一端，都在就双向透传二进制帧；任一端断，另一端收到 `present:false`、连接保持。同一 `id` 同一 role 只允许一条连接，新连顶掉旧连（旧连被关，对端不收 `present:false`）。`role` 只能是 `mac` / `phone`，`id` 只许 `[A-Za-z0-9_-]{8,64}`，否则 400 不升级；不校验 `Origin`。邀请码（2026-11-02）：中继环境变量 `RELAY_INVITES="码1,码2"`（逗号分隔、两边空白忽略，每个码只许 `[A-Za-z0-9_-]{8,64}`，有一个不合格中继拒绝启动），配了就要求 `invite` 等于其中一个（`crypto/subtle` 定长比较），缺或不对回 403 不升级，日志记 `bad invite role=… id=<前 6 位> ip=<X-Forwarded-For，没有就对端地址>`、不记码；没配（空）就和以前一样谁都能连。`/_voice/healthz` 不要码。单帧上限 64 KiB，超了断那条连接；中继每次写有 10 s 超时，写不出去就关那一端。客户端发来的文本帧除下面「推送」两种外中继忽略。
 - 中继不解密、不存。`GET /_voice/healthz` → `ok`。
 - **Mac→中继文本帧 `notify`**（2026-11-02）：没有通话时，Mac 发现某个 Claude 窗格变成 `blocked`，就往中继发一个**明文文本帧** `{"t":"notify","title":"<项目> 的 Claude 在等你","body":"<问题前 100 字>","block":"block:…","options":["<选项>",…]}`（0.3.3 起带 `block` 和 `options`：屏上编号选项最多 4 条、每条截 40 字，读不到就是空数组；手机凭它们在推送上直接回答，见第 3 节 `answer`），由中继转成 APNs 推送（中继侧见下面「推送」）。因为走明文，正文只放项目名和问题前 100 字，不放全文、不放 key。同一窗格 10 分钟内最多一条；窗格离开 `blocked` 前不重复触发；Mac 没连上中继时这条直接丢、记日志。监视只在 Mac（每 5 秒查一次 Rex，`internal/tools/watch.go`），手机不轮询。
 - 两端之间只走**二进制帧**（第 3 节的加密帧）；中继自己发给客户端的只有**文本帧**，内容 `{"t":"peer","present":true|false}`，对端上线 / 掉线时发给另一端，连上时也立即发一次当前状态。没有对端时收到的二进制帧直接丢。
@@ -18,7 +19,7 @@
   - 手机→中继 `{"t":"push_token","token":"<hex>"}`：每次连上发一次；token 只许 32–200 位十六进制，否则丢。中继按 `id` 存在**内存**里（重启即丢，手机下次连上重发），手机断开后保留，同 `id` 新 token 覆盖旧的。mac 端发的忽略。
   - Mac→中继 `{"t":"notify","title":string,"body":string,"block"?:string,"options"?:[string]}`：中继查这个 `id` 的 token，没有 token 或没配 APNs 就记日志丢弃；有就异步推一条（10 s 超时），成败只记日志、不回帖给 Mac。手机端发的忽略。
   - APNs：`POST https://api.push.apple.com/3/device/<token>`，头 `authorization: bearer <JWT>`、`apns-topic: com.maruiao.rexvoice`、`apns-push-type: alert`、`apns-priority: 10`，体 `{"aps":{"alert":{"title","body"},"sound":"default"}}`；notify 带 `block` 时体为 `{"aps":{"alert":{"title","body"},"sound":"default","category":"claude-ask","mutable-content":0},"block":"…","options":[…]}`（中继只转字段、不解密不存），手机按 `claude-ask` 类别显示五个动作：`pick1`「选 1」/`pick2`「选 2」/`pick3`「选 3」→ `answer keys:["N"]`，`reply`（文字输入「输入回复…」）→ `answer text`，`esc`「取消（Esc）」→ `answer keys:["escape"]`；五个动作都要求解锁（`authenticationRequired`），点推送本身只打开 app。JWT 用 .p8（PKCS#8 P-256）ES256 签，头 `alg/kid`、载荷 `iss`（team）+ `iat`，缓存 50 分钟换一次。非 200 时错误里带状态码和 `reason`。
-  - 中继环境变量：`APNS_KEY_PATH`、`APNS_KEY_ID`、`APNS_TEAM_ID`（`KAA6GJ59XS`）三个缺一个就不推、启动 warn 一行；key 读不出也只 warn、中继照常跑；`APNS_URL` 可选，覆盖 APNs 地址（测试用）。生产放 `/etc/rex-voice/relay.env`（unit 里 `EnvironmentFile=-`），.p8 的放法见 `scripts/deploy-relay.sh` 注释。
+  - 中继环境变量（邀请码 `RELAY_INVITES` 见本节开头，同放 `relay.env`）：`APNS_KEY_PATH`、`APNS_KEY_ID`、`APNS_TEAM_ID`（`KAA6GJ59XS`）三个缺一个就不推、启动 warn 一行；key 读不出也只 warn、中继照常跑；`APNS_URL` 可选，覆盖 APNs 地址（测试用）。生产放 `/etc/rex-voice/relay.env`（unit 里 `EnvironmentFile=-`），.p8 的放法见 `scripts/deploy-relay.sh` 注释。
 - nginx：`location /_voice/` 反代到 `127.0.0.1:8790`，`proxy_http_version 1.1` + Upgrade 头，`proxy_read_timeout`/`proxy_send_timeout 3600s`，`proxy_buffering off`，不套 `limit_req`。
 
 ## 3. 手机 ⇄ Mac 帧（经中继）

@@ -14,6 +14,13 @@ import Testing
         #expect(p.relay.absoluteString == "wss://r.maruiao.top/_voice/ws")
         #expect(p.id == Data((0...15).map { UInt8($0) }))
         #expect(p.key.withUnsafeBytes { Data($0) } == Data((0...31).map { UInt8($0) }))
+        #expect(p.invite == nil)
+    }
+
+    @Test func parsesInvite() throws {
+        let p = try Pairing.parse(URL(string: "rexvoice://pair?relay=\(Self.relay)&id=\(Self.id)&key=\(Self.key)&invite=test-code_1")!)
+        #expect(p.invite == "test-code_1")
+        #expect(p.relay.absoluteString == "wss://r.maruiao.top/_voice/ws")
     }
 
     @Test func parsesURLSafeAlphabet() throws {
