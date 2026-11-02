@@ -15,6 +15,8 @@ final class CallController {
         let id = UUID()
         let fromUser: Bool
         let text: String
+        /// Arrival time; the dialog interleaves lines and attachments by it.
+        let time = Date()
     }
 
     private(set) var link = Link.unpaired
@@ -28,6 +30,7 @@ final class CallController {
         enum Kind { case image(UIImage, name: String), link(URL, title: String) }
         let id = UUID()
         let kind: Kind
+        let time = Date()
     }
     /// Last 5, cleared when a call starts.
     private(set) var attachments: [Attachment] = []
@@ -393,6 +396,9 @@ extension CallController {
             Line(fromUser: true, text: "好。metis 那边呢？"),
             Line(fromUser: false, text: "metis-va 窗格停在等你确认：它问要不要把迁移文件一起提交。"),
             Line(fromUser: true, text: "让它先别提交，等我回去看"),
+            Line(fromUser: false, text: "好，我跟它说先不提交，等你回来再看迁移文件。"),
+            Line(fromUser: true, text: "geo 测试的截图发我看看"),
+            Line(fromUser: false, text: "截图发过去了，还有 metis 那个 PR 的链接。"),
         ]
         notice = nil
 
@@ -415,10 +421,14 @@ extension CallController {
         case .listening:
             link = .ready; inCall = true; callState = "listening"; transcript = Array(talk.prefix(4))
         case .thinking:
-            link = .ready; inCall = true; callState = "thinking"; transcript = talk
+            link = .ready; inCall = true; callState = "thinking"; transcript = Array(talk.prefix(5))
         case .speaking:
             link = .ready; inCall = true; callState = "speaking"
-            transcript = talk + [Line(fromUser: false, text: "好，我跟它说先不提交，等你回来再看迁移文件。")]
+            transcript = Array(talk.prefix(6))
+        }
+        // `REXVOICE_LINES=<n>` replaces the talk with its first n lines (repeating past the end): long dialogs for screenshots.
+        if link == .ready, let n = ProcessInfo.processInfo.environment["REXVOICE_LINES"].flatMap(Int.init), n > 0 {
+            transcript = (0..<n).map { talk[$0 % talk.count] }.map { Line(fromUser: $0.fromUser, text: $0.text) }
         }
         // `REXVOICE_ATTACH=1` shows where attachments land: one image + one link in a call.
         if inCall, ProcessInfo.processInfo.environment["REXVOICE_ATTACH"] == "1" {

@@ -216,18 +216,3 @@ struct V2IconButton: View {
         .accessibilityLabel(title)
     }
 }
-
-/// Small brand block: rounded square in the provider's color with its letter.
-struct BrandMark: View {
-    let provider: VoiceProvider
-    var size: CGFloat = 22
-    var body: some View {
-        Text(provider.mark)
-            .font(.system(size: size * 0.55, weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
-            .frame(width: size, height: size)
-            .background(RoundedRectangle(cornerRadius: size * 0.3).fill(provider.brand))
-            .overlay(RoundedRectangle(cornerRadius: size * 0.3).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
-            .accessibilityHidden(true)
-    }
-}
