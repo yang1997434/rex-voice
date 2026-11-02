@@ -1,0 +1,30 @@
+# xcodegen spec; scripts/build-ios.sh regenerates RexVoice.xcodeproj (not in git) on every run.
+name: RexVoice
+options:
+  deploymentTarget:
+    iOS: "18.0"
+packages:
+  RexVoiceCore:
+    path: ../RexVoiceCore
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: KAA6GJ59XS
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  RexVoice:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - package: RexVoiceCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maruiao.rexvoice
+        PRODUCT_NAME: RexVoice
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: NO

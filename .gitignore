@@ -12,3 +12,4 @@ xcuserdata/
 .env.*
 pair-*.json
 .claude/worktrees/
+ios/RexVoice/*.xcodeproj
