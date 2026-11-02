@@ -16,7 +16,9 @@ import (
 	"github.com/yang1997434/rex-voice/internal/pair"
 	"github.com/yang1997434/rex-voice/internal/tools"
 	"github.com/yang1997434/rex-voice/internal/voice"
+	_ "github.com/yang1997434/rex-voice/internal/voice/doubao" // registers provider "doubao"
 	_ "github.com/yang1997434/rex-voice/internal/voice/openai" // registers provider "openai"
+	_ "github.com/yang1997434/rex-voice/internal/voice/qwen"   // registers provider "qwen"
 )
 
 func serve(args []string) int {

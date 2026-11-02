@@ -59,3 +59,47 @@ var firPhases = func() [2][2 * firHalf]float64 {
 	}
 	return ph
 }()
+
+// Downsampler is Down24to16 with history across calls: feed it the 20 ms frames as they arrive and
+// each output sample sees its true neighbours, so there are no clicks at frame edges. Output lags
+// the input by firHalf samples (0.7 ms). Zero value is ready to use; not safe for concurrent use.
+type Downsampler struct {
+	buf  []float64 // input samples not yet dropped, buf[0] is absolute input index base
+	base int
+	next int // next output index j, at input position 1.5 j
+}
+
+// Write appends 24 kHz PCM16 and returns whatever 16 kHz PCM16 can be produced so far.
+func (d *Downsampler) Write(pcm []byte) ([]byte, error) {
+	if len(pcm)%2 != 0 {
+		return nil, errors.New("voice: PCM16 input must be an even number of bytes")
+	}
+	for k := 0; k+1 < len(pcm); k += 2 {
+		d.buf = append(d.buf, float64(int16(binary.LittleEndian.Uint16(pcm[k:]))))
+	}
+	at := func(k int) float64 { // before the first sample the signal is silence
+		if k < d.base {
+			return 0
+		}
+		return d.buf[k-d.base]
+	}
+	var out []byte
+	for {
+		k0, ph := 3*d.next/2, d.next%2
+		if k0+firHalf >= d.base+len(d.buf) {
+			break
+		}
+		var y float64
+		for i, w := range firPhases[ph] {
+			y += w * at(k0-firHalf+1+i)
+		}
+		out = binary.LittleEndian.AppendUint16(out, uint16(int16(math.Round(min(max(y, -32768), 32767)))))
+		d.next++
+	}
+	if keep := 3*d.next/2 - firHalf + 1; keep > d.base { // samples no future output needs
+		drop := min(keep-d.base, len(d.buf))
+		d.buf = append(d.buf[:0], d.buf[drop:]...)
+		d.base += drop
+	}
+	return out, nil
+}

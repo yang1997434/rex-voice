@@ -58,3 +58,35 @@ func TestDown24to16BadInput(t *testing.T) {
 		}
 	}
 }
+
+func TestDownsamplerMatchesWholeBuffer(t *testing.T) {
+	pcm := sine(1000, 24000, 24000, 10000) // 1 s
+	whole, err := Down24to16(pcm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d Downsampler
+	var got []byte
+	for i := 0; i < len(pcm); i += 960 { // 20 ms frames
+		part, err := d.Write(pcm[i:min(i+960, len(pcm))])
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, part...)
+	}
+	if len(got) < len(whole)-2*firHalf {
+		t.Fatalf("streamed %d bytes, whole %d", len(got), len(whole))
+	}
+	// Away from the very start (where Down24to16 repeats the edge and the streamer assumes silence),
+	// the streamed output must equal the whole-buffer output sample for sample.
+	for j := 2 * firHalf; j < len(got)/2; j++ {
+		a := int16(binary.LittleEndian.Uint16(got[2*j:]))
+		b := int16(binary.LittleEndian.Uint16(whole[2*j:]))
+		if a != b {
+			t.Fatalf("sample %d: streamed %d, whole %d", j, a, b)
+		}
+	}
+	if _, err := d.Write([]byte{1}); err == nil {
+		t.Fatal("odd length accepted")
+	}
+}
