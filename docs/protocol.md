@@ -63,7 +63,7 @@
 
 出错一律返回 `{"error":"…"}`（不超过 300 字），不让会话层报错：未知工具、参数不是 JSON 对象或带未定义字段、外部命令失败（取它 stderr）、工具内部 panic 都走这条，模型能看到原因。
 
-提示词（实验版，继续打磨）：中文、口语、像电话汇报；要调工具先说「我看一下」；问项目时把属于它的窗格全看一遍；Claude 原话用 `read_claude`，屏幕现状才用 `read_pane`；只讲结论和卡点，不念日志；附项目名表（geo / geo-us / metis-va / litscreen / shuqian / 26wiki / video / sub2api）和启动时生成的会话标签表。
+提示词（实验版，继续打磨）：中文、口语、像电话汇报；要调工具先说「我看一下」；问项目时把属于它的窗格全看一遍；Claude 原话用 `read_claude`，屏幕现状才用 `read_pane`；只讲结论和卡点，不念日志；附 `config.json` 里 `name`（称呼）和 `project_aliases`（项目说明），以及每次 `call.start` 和会话轮换时现生成的标签表（在跑的 Claude 目录名 + Rex 会话名），见 `internal/openai/prompt.go` `Build`。
 
 ## 6. 静音与挂断
 

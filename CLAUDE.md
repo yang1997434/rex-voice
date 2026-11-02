@@ -10,7 +10,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 | `rex-voice-relay` 中继 | `cmd/rex-voice-relay` | ccs-maruiao `23.94.9.58`，nginx `r.maruiao.top/_voice/` 后面 | systemd |
 | iOS app | `ios/RexVoice` | iPhone，TestFlight 分发 | — |
 
-音频走 Mac：手机 ⇄ 中继 ⇄ Mac ⇄ OpenAI。OpenAI key 只在 Mac（`flow-cred OPENAI_API_KEY`）。手机和 Mac 之间端到端加密，中继只转发。
+音频走 Mac：手机 ⇄ 中继 ⇄ Mac ⇄ OpenAI。OpenAI key 只在 Mac：服务从钥匙串读（`rex-voiced setup` 写入，服务 `rex-voice` 账户 `openai`），env `OPENAI_API_KEY` 优先，开发时用 `OPENAI_API_KEY=$(flow-cred OPENAI_API_KEY)`。手机和 Mac 之间端到端加密，中继只转发。
 
 ## 规矩
 
@@ -24,7 +24,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 ## 部署
 
 - **中继（ccs-maruiao）**：改生产，先要用户明文说「部署 rex-voice 中继」。步骤：本机 `GOOS=linux GOARCH=amd64 go build` → `scp` 到 `/opt/rex-voice/` → `systemctl restart rex-voice-relay` → `curl -A rex-voice-check https://r.maruiao.top/_voice/healthz`（不带 UA 会被该站的反爬 403）。中继以 systemd `DynamicUser` 跑、只听 `127.0.0.1:8790`。nginx 片段在 `scripts/nginx-voice.conf`，改 nginx 前先备份原文件。按总纲「部署分档」走：只换二进制算热修档。
-- **Mac 服务**：`scripts/install-launchd.sh`，本机、可随时回退，不算生产。
+- **Mac 服务**：`rex-voiced setup` → `pair` → `install`（`uninstall` 卸），本机、可随时回退，不算生产。对外分发包用 `scripts/release-mac.sh <版本>`（签名 + 公证），装法见 `README.md`。
 - **iOS**：`scripts/build-ios.sh <版本>`，用 ASC Admin key（`flow-cred ASC_ADMIN_KEY_ID / ASC_ISSUER_ID / ASC_ADMIN_KEY_PATH`），team `KAA6GJ59XS`，bundle id `com.maruiao.rexvoice`。发前先 `security unlock-keychain`，否则 archive 会卡死在签名。
 
 ## E2E 入口

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -137,7 +138,7 @@ func start(t *testing.T, echo bool, deviceID string) *env {
 	return startWith(t, echo, deviceID, relay.NewHub())
 }
 
-func startWith(t *testing.T, echo bool, deviceID string, h http.Handler) *env {
+func startWith(t *testing.T, echo bool, deviceID string, h http.Handler, mods ...func(*Config)) *env {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -155,6 +156,9 @@ func startWith(t *testing.T, echo bool, deviceID string, h http.Handler) *env {
 		e.ai = newFakeAI(t)
 		cfg.OpenAI = openai.Config{Model: "gpt-realtime-2.1", Key: "test-key", Instructions: "base prompt",
 			URL: "ws" + strings.TrimPrefix(e.ai.srv.URL, "http")}
+	}
+	for _, m := range mods {
+		m(&cfg)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -470,6 +474,28 @@ func TestHangUpTool(t *testing.T) {
 
 	ph.ctl(t, map[string]any{"t": "call.start"}) // back to waiting: a new call dials again
 	e.ai.accept(t)
+}
+
+func TestInstructionsRebuiltPerCall(t *testing.T) {
+	var n atomic.Int32
+	e := startWith(t, false, "", relay.NewHub(), func(c *Config) {
+		c.Instructions = func() string { return fmt.Sprintf("table %d", n.Add(1)) }
+	})
+	instrOf := func(ai *aiConn) string {
+		return ai.next(t, "session.update")["session"].(map[string]any)["instructions"].(string)
+	}
+	ph := e.ready(t)
+	for want := 1; want <= 2; want++ {
+		ph.ctl(t, map[string]any{"t": "call.start"})
+		ai := e.ai.accept(t)
+		if got := instrOf(ai); got != fmt.Sprintf("table %d", want) {
+			t.Fatalf("call %d instructions = %q", want, got)
+		}
+		ph.expectStatus(t, "connecting", "listening")
+		ph.ctl(t, map[string]any{"t": "call.end"})
+		ph.expectStatus(t, "ended")
+		ai.waitClosed(t)
+	}
 }
 
 func TestOpenAIDropEndsCall(t *testing.T) {

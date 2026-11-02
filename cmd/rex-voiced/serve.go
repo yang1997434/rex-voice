@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/yang1997434/rex-voice/internal/call"
+	"github.com/yang1997434/rex-voice/internal/config"
 	"github.com/yang1997434/rex-voice/internal/openai"
 	"github.com/yang1997434/rex-voice/internal/pair"
 	"github.com/yang1997434/rex-voice/internal/tools"
@@ -19,18 +20,26 @@ import (
 
 func serve(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	relayDefault := defaultRelay
-	if v := os.Getenv("REX_VOICE_RELAY"); v != "" {
-		relayDefault = v
-	}
-	relay := fs.String("relay", relayDefault, "relay WebSocket URL (env REX_VOICE_RELAY overrides the default)")
-	model := fs.String("model", "gpt-realtime-2.1", "OpenAI Realtime model")
+	dirFlag := configDirFlag(fs)
+	relay := fs.String("relay", "", "relay WebSocket URL (default: config.json relay)")
+	model := fs.String("model", "", "OpenAI Realtime model (default: config.json model)")
 	echo := fs.Bool("echo", false, "no OpenAI: echo phone audio back after 1 s (for iOS bring-up)")
 	keep := fs.Bool("keep-tool-outputs", false, "do not delete tool items after each answer (A/B)")
 	debug := fs.Bool("debug", false, "debug logging")
 	fs.Parse(args)
 
-	path := pairPath()
+	dir, c, err := loadConfig(*dirFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if *relay == "" {
+		*relay = c.Relay
+	}
+	if *model == "" {
+		*model = c.Model
+	}
+	path := pairPath(dir)
 	p, err := pair.Load(path)
 	if errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintln(os.Stderr, "还没配对：先运行 rex-voiced pair")
@@ -40,14 +49,20 @@ func serve(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	key := os.Getenv("OPENAI_API_KEY")
-	if key == "" && !*echo {
-		fmt.Fprintln(os.Stderr, "OPENAI_API_KEY is not set (OPENAI_API_KEY=$(flow-cred OPENAI_API_KEY) rex-voiced serve)")
-		return 1
+	log := logger(*debug)
+	var key string
+	if !*echo {
+		var src string
+		if key, src, err = config.OpenAIKey(os.Getenv, config.OpenAIKeychain()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		log.Info("openai key: " + src)
 	}
 
+	audit := logFile("audit.log")
 	reg := &tools.Registry{}
-	for _, t := range tools.NewRexTools(tools.Options{Audit: logFile("audit.log")}) {
+	for _, t := range withForbidExtra(tools.NewRexTools(tools.Options{Audit: audit}), c.ForbidExtra, audit) {
 		reg.Register(t)
 	}
 	cfg := call.Config{
@@ -56,14 +71,15 @@ func serve(args []string) int {
 		RelayURL:    *relay,
 		Tools:       reg,
 		Echo:        *echo,
-		Logger:      logger(*debug),
+		Logger:      log,
 		Version:     version,
 	}
 	if !*echo {
+		cfg.Instructions = func() string { return openai.Build(c.Name, c.ProjectAliases, projectLabels()) }
 		cfg.OpenAI = openai.Config{
 			Model:           *model,
 			Key:             key,
-			Instructions:    openai.WithLabels(openai.Prompt, rexLabels()),
+			Voice:           c.Voice,
 			Transcribe:      true,
 			KeepToolOutputs: *keep,
 			UsageLog:        usageLog(),
@@ -72,7 +88,7 @@ func serve(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	cfg.Logger.Info("rex-voiced serve", "version", version, "relay", *relay, "echo", *echo, "model", *model)
+	cfg.Logger.Info("rex-voiced serve", "version", version, "config", dir, "relay", *relay, "echo", *echo, "model", *model)
 	if err := call.Run(ctx, cfg); err != nil && ctx.Err() == nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

@@ -61,17 +61,24 @@ func (s *server) startCall() {
 	}
 	s.setState(c, "connecting")
 	c.fill = time.NewTicker(fillEvery)
-	s.dialSession(c, s.cfg.OpenAI.Instructions)
+	s.dialSession(c, s.instructions)
 }
 
-// dialSession opens an OpenAI session off the Run goroutine; dialed picks up the result.
-func (s *server) dialSession(c *callState, instructions string) {
+func (s *server) instructions() string {
+	if s.cfg.Instructions != nil {
+		return s.cfg.Instructions()
+	}
+	return s.cfg.OpenAI.Instructions
+}
+
+// dialSession builds the instructions and opens an OpenAI session off the Run goroutine; dialed picks up the result.
+func (s *server) dialSession(c *callState, instructions func() string) {
 	s.nextSID++
 	sid := s.nextSID
 	oc := s.cfg.OpenAI
-	oc.Instructions = instructions
 	oc.Handlers = s.handlers(sid)
 	go func() {
+		oc.Instructions = instructions()
 		ctx, cancel := context.WithTimeout(s.ctx, dialTimeout)
 		defer cancel()
 		sess, err := openai.Dial(ctx, oc)
@@ -282,13 +289,13 @@ func (s *server) onTick(now time.Time) {
 	if c.sess != nil && !c.rotating && c.state == "listening" && c.sess.Age() >= rotateAfter && now.After(c.rotateOK) {
 		c.rotating = true
 		var b strings.Builder
-		b.WriteString(s.cfg.OpenAI.Instructions)
 		b.WriteString("\n\n（系统提示：通话超过 55 分钟换了新会话，下面是刚才最后几轮，接着聊，不要提换会话的事）")
 		for _, t := range c.sess.RecentTurns(5) {
 			fmt.Fprintf(&b, "\n%s：%s", map[string]string{"user": "用户", "assistant": "你"}[t.Role], t.Text)
 		}
 		s.log.Info("rotating openai session", "age", c.sess.Age().Round(time.Second))
-		s.dialSession(c, b.String())
+		recent := b.String()
+		s.dialSession(c, func() string { return s.instructions() + recent })
 	}
 }
 

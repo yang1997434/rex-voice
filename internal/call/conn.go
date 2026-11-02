@@ -30,6 +30,10 @@ type Config struct {
 	Echo        bool            // no OpenAI: echo phone audio back after 1 s (iOS bring-up)
 	Logger      *slog.Logger
 	Version     string
+
+	// Instructions, if set, replaces OpenAI.Instructions and is called off the Run goroutine at every
+	// call.start and session rotation, so the prompt sees what is running now.
+	Instructions func() string
 }
 
 // Timings; tests shorten them.
