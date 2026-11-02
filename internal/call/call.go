@@ -218,7 +218,11 @@ func (s *server) callTool(ctx context.Context, name, args string) string {
 			s.setState(c, "thinking")
 		}
 	})
-	return s.cfg.Tools.Call(ctx, name, args)
+	t0 := time.Now()
+	out := s.cfg.Tools.Call(ctx, name, args)
+	// One line per tool call: which provider models actually call tools (11-02: Qwen claimed sends it never made).
+	s.log.Info("tool call", "tool", name, "ms", time.Since(t0).Milliseconds(), "error", strings.HasPrefix(out, `{"error"`), "args", truncRunes(args, 160))
+	return out
 }
 
 func (s *server) setState(c *callState, state string) {
