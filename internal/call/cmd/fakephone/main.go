@@ -4,6 +4,8 @@
 //	-mode echo   send 5 s of 440 Hz sine and compare the RMS of what comes back (rex-voiced serve -echo)
 //	-mode wav    send a 24 kHz mono PCM16 WAV, then keep the mic open with silence until the answer ends
 //	-mode idle   send no audio and wait for hang_up (expects reason idle after 90 s)
+//	-mode ask    no call: wait for the ask of -ctl's block, send -ctl (e.g. {"t":"answer","block":"…","keys":["2"]}),
+//	             wait for answer_result, then for that block's ask_done
 package main
 
 import (
@@ -54,7 +56,15 @@ func main() {
 	deviceID := flag.String("device-id", "fakephone-0001", "device_id sent in hello")
 	wait := flag.Duration("wait", 60*time.Second, "how long to wait for the answer / hang_up")
 	barge := flag.Duration("barge", 0, "-mode wav: send each later turn this long after the answer starts (barge-in) instead of after it ends")
+	ctl := flag.String("ctl", "", "-mode ask: control JSON to send once an ask arrives")
 	flag.Parse()
+	if *mode == "ask" {
+		if err := runAsk(*pairFile, *relay, *deviceID, *ctl, *wait); err != nil {
+			logf("FAIL: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(*pairFile, *relay, *mode, *wav, *out, *deviceID, *wait, *barge); err != nil {
 		logf("FAIL: %v", err)
 		os.Exit(1)
@@ -103,28 +113,11 @@ func run(pairFile, relay, mode, wavPath, out, deviceID string, wait, barge time.
 		return err
 	}
 	wc.Header.Set("User-Agent", "RexVoice-iOS/fakephone")
-	ws, err := wc.DialContext(context.Background())
+	ph, err := connect(p, wc, deviceID)
 	if err != nil {
 		return err
 	}
-	defer ws.Close()
-	ph := &phone{ws: ws, ctl: make(chan map[string]any, 100), readErr: make(chan error, 1)}
-
-	var salt [16]byte
-	rand.Read(salt[:])
-	mac, err := waitMacSalt(ws)
-	if err != nil {
-		return err
-	}
-	logf("mac salt %x", mac[:4])
-	ph.tx = pair.NewCipher(p.Key, pair.PhoneToMac, salt, mac)
-	rx := pair.NewCipher(p.Key, pair.MacToPhone, salt, mac)
-	if err := websocket.Message.Send(ws, pair.SaltFrame(salt)); err != nil {
-		return err
-	}
-	go ph.read(rx, mac)
-
-	ph.sendCtl(map[string]any{"t": "hello", "app": "fakephone", "device": "Mac", "device_id": deviceID})
+	defer ph.ws.Close()
 	ph.sendCtl(map[string]any{"t": "call.start"})
 	if _, err := ph.until("status", "listening", 20*time.Second); err != nil {
 		return err
@@ -170,6 +163,81 @@ func run(pairFile, relay, mode, wavPath, out, deviceID string, wait, barge time.
 		return err
 	}
 	return writeOut(ph, out)
+}
+
+// connect dials the relay, exchanges salts and says hello.
+func connect(p pair.Pairing, wc *websocket.Config, deviceID string) (*phone, error) {
+	ws, err := wc.DialContext(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	ph := &phone{ws: ws, ctl: make(chan map[string]any, 100), readErr: make(chan error, 1)}
+	var salt [16]byte
+	rand.Read(salt[:])
+	mac, err := waitMacSalt(ws)
+	if err != nil {
+		ws.Close()
+		return nil, err
+	}
+	logf("mac salt %x", mac[:4])
+	ph.tx = pair.NewCipher(p.Key, pair.PhoneToMac, salt, mac)
+	rx := pair.NewCipher(p.Key, pair.MacToPhone, salt, mac)
+	if err := websocket.Message.Send(ws, pair.SaltFrame(salt)); err != nil {
+		ws.Close()
+		return nil, err
+	}
+	go ph.read(rx, mac)
+	ph.sendCtl(map[string]any{"t": "hello", "app": "fakephone", "device": "Mac", "device_id": deviceID})
+	return ph, nil
+}
+
+// runAsk is -mode ask: answer a Claude's question the way the app does, without a call.
+func runAsk(pairFile, relay, deviceID, ctl string, wait time.Duration) error {
+	p, err := pair.Load(pairFile)
+	if err != nil {
+		return err
+	}
+	var req map[string]any
+	if err := json.Unmarshal([]byte(ctl), &req); err != nil {
+		return fmt.Errorf("-ctl: %w", err)
+	}
+	wc, err := websocket.NewConfig(relay+"?role=phone&id="+base64.RawURLEncoding.EncodeToString(p.ID[:]), "http://localhost")
+	if err != nil {
+		return err
+	}
+	wc.Header.Set("User-Agent", "RexVoice-iOS/fakephone")
+	ph, err := connect(p, wc, deviceID)
+	if err != nil {
+		return err
+	}
+	defer ph.ws.Close()
+	for { // other Claude panes may be blocked too: only ever answer the one named in -ctl
+		ask, err := ph.until("ask", "", wait)
+		if err != nil {
+			return err
+		}
+		if ask["block"] == req["block"] {
+			break
+		}
+	}
+	ph.sendCtl(req)
+	res, err := ph.until("answer_result", "", 20*time.Second)
+	if err != nil {
+		return err
+	}
+	if res["ok"] != true {
+		return fmt.Errorf("answer failed: %v", res["msg"])
+	}
+	for {
+		done, err := ph.until("ask_done", "", wait)
+		if err != nil {
+			return err
+		}
+		if done["block"] == req["block"] {
+			logf("PASS: answered %v", req["block"])
+			return nil
+		}
+	}
 }
 
 // speak streams one user turn paced like a microphone: one 20 ms frame per 20 ms.

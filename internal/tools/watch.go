@@ -14,12 +14,15 @@ type Blocked struct {
 	Session string // Rex session label
 	Project string // directory name of the Claude's cwd; the session label when unknown
 	Msg     string // program_status msg, usually the question Claude is asking
+	// Options are the numbered choices on screen (ParseOptions); empty when none could be read.
+	Options []string
 }
 
 // Watch polls Rex every `every` until ctx is done and calls on (from its own goroutine) when a
 // claude-code pane turns blocked; a pane that stays blocked is reported once. A pane first seen
-// already blocked counts as turning blocked. A failed round is logged and skipped.
-func Watch(ctx context.Context, opts Options, every time.Duration, on func(Blocked)) {
+// already blocked counts as turning blocked. off is called with the block when a reported pane
+// stops being blocked (or is gone). A failed round is logged and skipped.
+func Watch(ctx context.Context, opts Options, every time.Duration, on func(Blocked), off func(block string)) {
 	if opts.Exec == nil {
 		opts.Exec = runCmd
 	}
@@ -54,7 +57,17 @@ func Watch(ctx context.Context, opts Options, every time.Duration, on func(Block
 				if b.Project == "" {
 					b.Project = p.Session
 				}
+				if out, err := e.Exec(ctx, "rex", "capture", "-s", p.sid, "-b", p.Block); err != nil {
+					slog.Warn("claude watch: capture failed, no options", "block", p.Block, "err", err)
+				} else {
+					b.Options = ParseOptions(string(out))
+				}
 				on(b)
+			}
+			for blk := range blocked {
+				if !now[blk] {
+					off(blk)
+				}
 			}
 			blocked = now
 		}

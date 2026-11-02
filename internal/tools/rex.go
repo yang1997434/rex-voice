@@ -294,6 +294,7 @@ type pane struct {
 	State   string `json:"state"`
 	Doing   string `json:"doing"`
 	pid     int
+	sid     string
 }
 
 func (e *env) panes(ctx context.Context) ([]pane, error) {
@@ -308,7 +309,7 @@ func (e *env) panes(ctx context.Context) ([]pane, error) {
 			return nil, err
 		}
 		for _, b := range bs {
-			p := pane{Session: s.Label, Block: b.ID, Label: b.Label, App: "shell", State: "idle"}
+			p := pane{Session: s.Label, Block: b.ID, Label: b.Label, App: "shell", State: "idle", sid: s.ID}
 			// A pane with no reporting program (plain shell) has no status; that is not an error.
 			if st, err := e.programStatus(ctx, s.ID, b.ID); err == nil && st != nil {
 				p.App, p.State, p.Doing, p.pid = st.App, st.State, st.Msg, st.Owner.Pid
@@ -432,7 +433,7 @@ func (e *env) sendToPane(ctx context.Context, args json.RawMessage) (any, error)
 	a.Block = bid
 	// Claude panes pass: deploy instructions to Claude are gated by the prompt's read-back-and-confirm.
 	if !e.isClaudePane(ctx, sid, a.Block) && e.forbids(a.Text) {
-		return e.audit(map[string]string{"refused": refusedMsg}, "send_to_pane", a.Block, a.Text, "refused"), nil
+		return e.audit(ctx, map[string]string{"refused": refusedMsg}, "send_to_pane", a.Block, a.Text, "refused"), nil
 	}
 	// "--" so text starting with "-" is not parsed as a rex flag.
 	if _, err := e.Exec(ctx, "rex", "send", "-s", sid, "-b", a.Block, "--", a.Text); err != nil {
@@ -441,7 +442,7 @@ func (e *env) sendToPane(ctx context.Context, args json.RawMessage) (any, error)
 	if _, err := e.Exec(ctx, "rex", "send-key", "-s", sid, "-b", a.Block, "enter"); err != nil {
 		return nil, err
 	}
-	return e.audit(map[string]string{"sent": a.Text}, "send_to_pane", a.Block, a.Text, "sent"), nil
+	return e.audit(ctx, map[string]string{"sent": a.Text}, "send_to_pane", a.Block, a.Text, "sent"), nil
 }
 
 // forbids checks the built-in list plus Options.ForbidExtra (case-insensitive substrings).
@@ -465,12 +466,22 @@ func (e *env) isClaudePane(ctx context.Context, sid, block string) bool {
 	return err == nil && st != nil && st.App == "claude-code" && st.Owner.Pid > 0 && e.Alive(st.Owner.Pid)
 }
 
+type sourceKey struct{}
+
+// WithSource marks the tool calls made with ctx as coming from src (e.g. "phone" for an answer from the
+// app); their audit lines carry "source". Calls without it are the voice model's and carry none.
+func WithSource(ctx context.Context, src string) context.Context {
+	return context.WithValue(ctx, sourceKey{}, src)
+}
+
 // audit writes one JSON line and returns res, with audit_error added if the write failed
 // (the action already happened, so it is reported rather than turned into a tool error).
-func (e *env) audit(res map[string]string, tool, block, text, result string) map[string]string {
-	line, _ := json.Marshal(map[string]string{
-		"time": time.Now().Format(time.RFC3339), "tool": tool, "block": block, "text": text, "result": result,
-	})
+func (e *env) audit(ctx context.Context, res map[string]string, tool, block, text, result string) map[string]string {
+	rec := map[string]string{"time": time.Now().Format(time.RFC3339), "tool": tool, "block": block, "text": text, "result": result}
+	if src, _ := ctx.Value(sourceKey{}).(string); src != "" {
+		rec["source"] = src
+	}
+	line, _ := json.Marshal(rec)
 	e.auditMu.Lock()
 	defer e.auditMu.Unlock()
 	if _, err := e.Audit.Write(append(line, '\n')); err != nil {

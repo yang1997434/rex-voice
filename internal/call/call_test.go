@@ -546,10 +546,15 @@ func fakeRex(blocked *atomic.Bool) func(context.Context, string, ...string) ([]b
 				st = "blocked"
 			}
 			return fmt.Appendf(nil, `{"records":[{"state":%q,"app":"claude-code","msg":"要合并 PR 吗？"}]}`, st), nil
+		case cmd == "rex capture -s s1 -b b1":
+			return []byte(fakeBox), nil
 		}
 		return nil, fmt.Errorf("fake: unexpected command %s", cmd)
 	}
 }
+
+// fakeBox is a Claude question box with five options, one longer than a push may carry.
+const fakeBox = "要合并 PR 吗？\n❯ 1. 合并\n  2. 先不合并，等 CI 跑完再说，这一句故意写得很长很长很长很长很长很长很长很长很长很长很长\n  3. 关掉\n  4. 改标题\n  5. 问别人\n"
 
 func withWatch(t *testing.T, blocked *atomic.Bool) func(*Config) {
 	set(t, &watchEvery, 20*time.Millisecond)
@@ -604,10 +609,17 @@ func TestBlockedClaudeNotifiesRelayOutsideCall(t *testing.T) {
 	blocked.Store(true)
 	select {
 	case got := <-texts:
-		var m map[string]string
+		var m struct {
+			T, Title, Body, Block string
+			Options               []string
+		}
 		json.Unmarshal([]byte(got), &m)
-		if m["t"] != "notify" || m["title"] != "dev 的 Claude 在等你" || m["body"] != "要合并 PR 吗？" {
+		if m.T != "notify" || m.Title != "dev 的 Claude 在等你" || m.Body != "要合并 PR 吗？" || m.Block != "b1" {
 			t.Fatalf("notify = %s", got)
+		}
+		long := "先不合并，等 CI 跑完再说，这一句故意写得很长很长很长很长很长很长很长很长很长很长很长"
+		if want := []string{"合并", string([]rune(long)[:40]), "关掉", "改标题"}; fmt.Sprint(m.Options) != fmt.Sprint(want) {
+			t.Fatalf("notify options = %q, want %q (4 at most, 40 runes each)", m.Options, want)
 		}
 	case <-time.After(wait):
 		t.Fatal("no notify text frame")
@@ -960,8 +972,8 @@ func TestRetryAfterUpgradeFailure(t *testing.T) {
 // pushRecorder stands in for APNs behind the relay: it records every push the Mac's notify causes.
 type pushRecorder struct{ pushes chan string }
 
-func (r *pushRecorder) Push(_ context.Context, _, title, _ string) error {
-	r.pushes <- title
+func (r *pushRecorder) Push(_ context.Context, _ string, a relay.Alert) error {
+	r.pushes <- a.Title
 	return nil
 }
 
