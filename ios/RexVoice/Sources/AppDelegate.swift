@@ -4,7 +4,7 @@ import UserNotifications
 /// APNs token, foreground banners and the「Claude 在等你」push actions. The Mac asks the relay to push (e.g. Claude
 /// is stuck); a push with category `claude-ask` carries the pane's `block`, and its actions answer it without a call.
 /// Tapping the push itself only opens the app.
-final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+final class AppDelegate: NSObject, UIApplicationDelegate, @preconcurrency UNUserNotificationCenterDelegate {
     /// Set once the scene is up; a token that arrived earlier is handed over then.
     var controller: CallController? {
         didSet { if let token { controller?.setPushToken(token) } }
@@ -39,12 +39,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         controller?.notice = "推送注册失败：\(error.localizedDescription)"
     }
 
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                            willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+    // Both stay on the main actor (hence `@preconcurrency` above, which the Swift 6 Sendable check needs):
+    // `nonisolated async` ones finish on a cooperative thread, and UIKit asserts the completion it wraps them in runs
+    // on main — tapping a push from the background crashed (0.3.3).
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         [.banner, .sound]
     }
 
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         guard let block = response.notification.request.content.userInfo["block"] as? String else { return }
         var keys: [String]?, text: String?
         switch response.actionIdentifier {
