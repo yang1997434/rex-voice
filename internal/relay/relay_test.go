@@ -142,6 +142,44 @@ func TestBadRoleOrID(t *testing.T) {
 	}
 }
 
+func TestInviteRequired(t *testing.T) {
+	h, s := newRelay(t)
+	h.Invites = []string{"testcode1", "testcode2"}
+	for _, q := range []string{"", "&invite=", "&invite=wrongcode", "&invite=testcode", "&invite=testcode1x"} {
+		resp, err := http.Get(s.URL + "/_voice/ws?role=mac&id=" + testID + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%q: got %d, want 403", q, resp.StatusCode)
+		}
+	}
+	mac := dial(t, s, "mac", testID+"&invite=testcode2")
+	expectPeer(t, mac, false)
+}
+
+func TestNoInvitesConfiguredLetsAnyoneIn(t *testing.T) {
+	_, s := newRelay(t)
+	expectPeer(t, dial(t, s, "mac", testID), false)
+	expectPeer(t, dial(t, s, "phone", testID+"&invite=whatever1"), true)
+}
+
+func TestParseInvites(t *testing.T) {
+	got, err := ParseInvites(" testcode1, ,test-code_2 ")
+	if err != nil || len(got) != 2 || got[0] != "testcode1" || got[1] != "test-code_2" {
+		t.Fatalf("got %q %v", got, err)
+	}
+	if got, err := ParseInvites(""); err != nil || len(got) != 0 {
+		t.Fatalf("empty: %q %v", got, err)
+	}
+	for _, bad := range []string{"short", "testcode1,has space1", "bad/slash00"} {
+		if _, err := ParseInvites(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
 func TestUpgradeWithoutOrigin(t *testing.T) {
 	_, s := newRelay(t)
 	c, err := net.Dial("tcp", strings.TrimPrefix(s.URL, "http://"))

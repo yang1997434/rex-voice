@@ -21,6 +21,16 @@ func main() {
 	flag.Parse()
 
 	hub := relay.NewHub()
+	invites, err := relay.ParseInvites(os.Getenv("RELAY_INVITES"))
+	if err != nil {
+		log.Fatalf("RELAY_INVITES: %v", err) // refuse to start open when the operator meant to lock it
+	}
+	hub.Invites = invites
+	if len(invites) == 0 {
+		log.Print("RELAY_INVITES not set, anyone can connect")
+	} else {
+		log.Printf("invites required (%d codes)", len(invites))
+	}
 	keyPath, keyID, teamID := os.Getenv("APNS_KEY_PATH"), os.Getenv("APNS_KEY_ID"), os.Getenv("APNS_TEAM_ID")
 	if keyPath == "" || keyID == "" || teamID == "" {
 		log.Print("warn: APNS_KEY_PATH / APNS_KEY_ID / APNS_TEAM_ID not all set, push disabled")

@@ -77,6 +77,7 @@ func serve(args []string) int {
 		Pairing:     &p,
 		PairingPath: path,
 		RelayURL:    *relay,
+		Invite:      c.Invite,
 		Tools:       reg,
 		Echo:        *echo,
 		Watch:       true, // tell the user when a Claude pane turns blocked; off with -echo

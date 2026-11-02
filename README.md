@@ -42,6 +42,8 @@ Mac 上跑的是后台服务 `rex-voiced`。手机和 Mac 之间经一台中继�
 
    终端里会出现一个二维码，打开 RexVoice app 扫它。一台 Mac 只配一台手机。
 
+   用别人分享的中继（比如默认的 `r.maruiao.top`）要邀请码，向分享人要，配对时带上：`rex-voiced pair -invite <邀请码>`。码存进 `config.json`，以后 `pair -force` 不用再带。
+
 4. **装成后台服务**：
 
    ```sh
@@ -100,6 +102,7 @@ Mac 上跑的是后台服务 `rex-voiced`。手机和 Mac 之间经一台中继�
 1. 任意一台有公网地址、装了 nginx 和 HTTPS 证书的 Linux。
 2. 编译：`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o rex-voice-relay ./cmd/rex-voice-relay`，放到 `/opt/rex-voice/`。
 3. systemd 用 `scripts/rex-voice-relay.service`（只听 `127.0.0.1:8790`）；nginx 在你的 server 块里 `include` 一份 `scripts/nginx-voice.conf`。
+   要邀请码才能连（分享给别人用时防蹭）：在 `/etc/rex-voice/relay.env` 写一行 `RELAY_INVITES=码1,码2`（每个码 8–64 位字母、数字、`_`、`-`），重启服务；不写就谁都能连。各人配对时用 `rex-voiced pair -invite <码>`。
 4. 配对时指定它：`rex-voiced pair -relay wss://你的域名/_voice/ws`，地址会写进二维码和 `config.json`，手机和 Mac 都改走它。
 5. 验证：`curl -A rex-voice-check https://你的域名/_voice/healthz` 返回 `ok`。
 

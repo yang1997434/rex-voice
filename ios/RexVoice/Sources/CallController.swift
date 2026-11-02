@@ -326,6 +326,9 @@ final class CallController {
             asks = [] // the Mac resends every still-open ask right after this hello
             // The Mac keeps a call across a phone reconnect; call.start is idempotent there.
             if inCall, let relay, let startMessage { Task { await relay.send(startMessage) } }
+        case .inviteRejected:
+            link = .connecting
+            notice = "中继要邀请码，请在 Mac 上重新 pair 后扫码"
         case let .failed(message):
             // Idle (e.g. back from the background after a hang-up) the link state already says it; only a live
             // call or sample needs telling why it dropped.

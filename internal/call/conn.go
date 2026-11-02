@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ type Config struct {
 	Pairing     *pair.Pairing
 	PairingPath string // where Pairing is saved when the first hello records its device_id
 	RelayURL    string // e.g. wss://r.maruiao.top/_voice/ws
+	Invite      string // relay invite code, sent as ?invite=; empty = not sent
 	// Voice is config.json's provider, model and voice (empty Provider = openai); call.start's
 	// provider / model / voice / api_key override them for one call. Model, Voice and Key only
 	// apply while the call uses Voice.Provider.
@@ -106,6 +108,9 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	s := &server{cfg: cfg, log: log, ctx: ctx, events: make(chan func(), 512),
 		wsURL: cfg.RelayURL + "?role=mac&id=" + base64.RawURLEncoding.EncodeToString(cfg.Pairing.ID[:])}
+	if cfg.Invite != "" {
+		s.wsURL += "&invite=" + url.QueryEscape(cfg.Invite)
+	}
 	if !cfg.Echo {
 		cfg.Tools.Register(tools.HangUpDef(func(reason string) {
 			s.post(func() { s.onHangUpTool(reason) })

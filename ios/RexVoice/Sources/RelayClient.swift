@@ -14,6 +14,8 @@ actor RelayClient {
         /// One type 4 chunk of the image announced by `attach` with the same `id`.
         case attachChunk(id: Int, index: Int, data: Data)
         case failed(String)
+        /// The relay answered the upgrade with 403: it wants an invite this pairing lacks or has wrong.
+        case inviteRejected
     }
 
     nonisolated let events: AsyncStream<Event>
@@ -34,7 +36,7 @@ actor RelayClient {
         c.queryItems = (c.queryItems ?? []) + [
             URLQueryItem(name: "role", value: "phone"),
             URLQueryItem(name: "id", value: Self.base64URL(pairing.id)),
-        ]
+        ] + (pairing.invite.map { [URLQueryItem(name: "invite", value: $0)] } ?? [])
         url = c.url!
         self.userAgent = userAgent
         self.hello = hello
@@ -129,7 +131,12 @@ actor RelayClient {
                 handle(message, on: task)
             }
         } catch {
-            if !Task.isCancelled { emit.yield(.failed("连接断开：\(error.localizedDescription)")) }
+            if Task.isCancelled {
+            } else if (task.response as? HTTPURLResponse)?.statusCode == 403 {
+                emit.yield(.inviteRejected) // still retried with backoff: the relay may only be restarting with new codes
+            } else {
+                emit.yield(.failed("连接断开：\(error.localizedDescription)"))
+            }
         }
         return received
     }

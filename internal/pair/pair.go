@@ -111,10 +111,14 @@ func (p Pairing) Save(path string) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// URL is the QR payload; id and key are unpadded base64url.
-func (p Pairing) URL(relayWS string) string {
-	return "rexvoice://pair?relay=" + url.QueryEscape(relayWS) +
+// URL is the QR payload; id and key are unpadded base64url. An empty invite is left out.
+func (p Pairing) URL(relayWS, invite string) string {
+	u := "rexvoice://pair?relay=" + url.QueryEscape(relayWS) +
 		"&id=" + b64.EncodeToString(p.ID[:]) + "&key=" + b64.EncodeToString(p.Key[:])
+	if invite != "" {
+		u += "&invite=" + url.QueryEscape(invite)
+	}
+	return u
 }
 
 const quiet = 2 // quiet-zone modules on each side

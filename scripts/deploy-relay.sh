@@ -5,6 +5,8 @@ set -euo pipefail
 # APNs 推送配置（本脚本不碰，首次在 ccs-maruiao 上手动放，root 所有、0600）：
 #   /etc/rex-voice/relay.env   三行 APNS_KEY_PATH=... APNS_KEY_ID=... APNS_TEAM_ID=KAA6GJ59XS；文件不在中继照常跑、只是不推。
 #                              EnvironmentFile 由 systemd 以 root 读，0600 没问题。
+#                              可选第四行 RELAY_INVITES=码1,码2（邀请码，每个 [A-Za-z0-9_-]{8,64}）：写了就只放行带对码的连接，
+#                              有一个码格式不对中继起不来；不写谁都能连。改完 systemctl restart，已配对的手机和 Mac 要 pair -force -invite 重扫。
 #   /etc/rex-voice/AuthKey.p8  ASC 下载的 APNs key。DynamicUser 每次启动分配临时 UID，没法把文件 chown 给它，
 #                              0600 root 的文件服务读不到；用 LoadCredential 让 systemd 以 root 读、拷到
 #                              /run/credentials/rex-voice-relay.service/ 只给本服务读：

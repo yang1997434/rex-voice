@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/yang1997434/rex-voice/internal/config"
 	"github.com/yang1997434/rex-voice/internal/pair"
@@ -17,12 +18,17 @@ func pairCmd(args []string) int {
 	fs := flag.NewFlagSet("pair", flag.ExitOnError)
 	dirFlag := configDirFlag(fs)
 	relay := fs.String("relay", "", "relay WebSocket URL put into the QR code and saved to config.json (default: config.json relay)")
+	invite := fs.String("invite", "", "relay invite code put into the QR code and saved to config.json (default: config.json invite; none = not sent)")
 	force := fs.Bool("force", false, "replace an existing pairing (the paired phone stops working)")
 	fs.Parse(args)
 
 	dir, c, err := loadConfig(*dirFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if *invite != "" && !inviteRe.MatchString(*invite) {
+		fmt.Fprintln(os.Stderr, "pair: 邀请码只能是 8–64 位字母、数字、_ 或 -")
 		return 1
 	}
 	if *relay != "" && *relay != c.Relay {
@@ -34,6 +40,15 @@ func pairCmd(args []string) int {
 	}
 	if *relay == "" {
 		*relay = c.Relay
+	}
+	if *invite != "" && *invite != c.Invite {
+		if err := saveInvite(dir, *invite); err != nil {
+			fmt.Fprintln(os.Stderr, "pair:", err)
+			return 1
+		}
+	}
+	if *invite == "" {
+		*invite = c.Invite
 	}
 	path := pairPath(dir)
 	old, err := pair.Load(path)
@@ -53,12 +68,23 @@ func pairCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "pair:", err)
 		return 1
 	}
-	u := p.URL(*relay)
+	u := p.URL(*relay, *invite)
 	fmt.Print(pair.QRText(u))
 	fmt.Println(u)
 	fmt.Println("已保存到", path, "；用 RexVoice app 扫上面的二维码。")
 	fmt.Println("下一步：rex-voiced install（装成后台服务）")
 	return 0
+}
+
+var inviteRe = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`) // same rule as the relay's RELAY_INVITES
+
+func saveInvite(dir, invite string) error {
+	c, err := config.Read(dir)
+	if err != nil {
+		return err
+	}
+	c.Invite = invite
+	return c.Save(dir)
 }
 
 func saveRelay(dir, relay string) error {
