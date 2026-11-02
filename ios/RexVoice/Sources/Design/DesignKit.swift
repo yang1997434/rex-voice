@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// The Liquid Glass design drafts. They compile into every build so the archive proves the glass APIs
-/// against the device SDK, but only a DEBUG build with `REXVOICE_DESIGN=a|b|c` ever shows one.
+/// The design drafts (a–c Liquid Glass, d–e persona round). They compile into every build so the archive proves
+/// the APIs against the device SDK, but only a DEBUG build with `REXVOICE_DESIGN=a|b|c|d|e` ever shows one.
 enum DesignVariant: String {
-    case a, b, c
+    case a, b, c, d, e
 
     #if DEBUG
     static var current: DesignVariant? {
@@ -32,11 +32,21 @@ struct DesignRoot: View {
     let variant: DesignVariant
     var initialSheet: DesignSheet?
 
+    init(variant: DesignVariant, initialSheet: DesignSheet? = nil) {
+        self.variant = variant
+        self.initialSheet = initialSheet
+        #if DEBUG
+        PersonaStyle.applyPreviewOverride()
+        #endif
+    }
+
     var body: some View {
         switch variant {
         case .a: PhoneDesign(initialSheet: initialSheet)
         case .b: ChatDesign(initialSheet: initialSheet)
         case .c: DashboardDesign(initialSheet: initialSheet)
+        case .d: RoomDesign(initialSheet: initialSheet)
+        case .e: CardDesign(initialSheet: initialSheet)
         }
     }
 }
