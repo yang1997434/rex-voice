@@ -418,6 +418,42 @@ func TestNotifyPushesToAPNs(t *testing.T) {
 	if body.Aps.Alert.Title != "Claude 卡住了" || body.Aps.Alert.Body != "窗格 2 在等你" || body.Aps.Sound != "default" {
 		t.Fatalf("body = %s", hit.body)
 	}
+	if strings.Contains(string(hit.body), "category") || strings.Contains(string(hit.body), "block") {
+		t.Fatalf("notify without block got actions: %s", hit.body)
+	}
+}
+
+// A notify with block becomes an actionable push: category claude-ask, block and options as custom keys.
+func TestNotifyWithBlockIsActionable(t *testing.T) {
+	h, s := newRelay(t)
+	fake, hits := fakeAPNs(t, 200, "")
+	h.Notifier = newTestAPNS(t, fake.URL)
+	mac, phone := pair(t, s)
+	sendText(t, phone, `{"t":"push_token","token":"`+testToken+`"}`)
+	syncPump(t, phone, mac)
+	sendText(t, mac, `{"t":"notify","title":"geo 的 Claude 在等你","body":"午饭吃什么？","block":"block:01a1","options":["面条","米饭"]}`)
+	var hit apnsHit
+	select {
+	case hit = <-hits:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no APNs request")
+	}
+	var body struct {
+		Aps struct {
+			Alert          struct{ Title, Body string }
+			Category       string
+			MutableContent *int `json:"mutable-content"`
+		}
+		Block   string
+		Options []string
+	}
+	if err := json.Unmarshal(hit.body, &body); err != nil {
+		t.Fatalf("body %s: %v", hit.body, err)
+	}
+	if body.Aps.Category != "claude-ask" || body.Aps.MutableContent == nil || *body.Aps.MutableContent != 0 ||
+		body.Block != "block:01a1" || len(body.Options) != 2 || body.Options[1] != "米饭" || body.Aps.Alert.Body != "午饭吃什么？" {
+		t.Fatalf("body = %s", hit.body)
+	}
 }
 
 func TestNotifyWithoutTokenSkips(t *testing.T) {
@@ -451,7 +487,7 @@ func TestNotifyWithoutNotifierSkips(t *testing.T) {
 
 func TestAPNsErrorCarriesReason(t *testing.T) {
 	fake, _ := fakeAPNs(t, 400, `{"reason":"BadDeviceToken"}`)
-	err := newTestAPNS(t, fake.URL).Push(t.Context(), testToken, "t", "b")
+	err := newTestAPNS(t, fake.URL).Push(t.Context(), testToken, Alert{Title: "t", Body: "b"})
 	if err == nil || !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "BadDeviceToken") {
 		t.Fatalf("err = %v", err)
 	}

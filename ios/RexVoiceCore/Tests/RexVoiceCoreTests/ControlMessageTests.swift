@@ -19,6 +19,16 @@ import Testing
          #"{"t":"attach","id":7,"name":"shot.jpg","mime":"image/jpeg","size":120000,"chunks":3}"#),
         (.link(url: "https://example.com/pull/1", title: "PR #1"),
          #"{"t":"link","url":"https://example.com/pull/1","title":"PR #1"}"#),
+        (.ask(block: "block:01a1", session: "jobs", project: "geo", msg: "午饭吃什么？", options: ["面条", "米饭"]),
+         #"{"t":"ask","block":"block:01a1","session":"jobs","project":"geo","msg":"午饭吃什么？","options":["面条","米饭"]}"#),
+        (.ask(block: "block:01a2", session: "dev", project: "dev", msg: "approve plan", options: []),
+         #"{"t":"ask","block":"block:01a2","session":"dev","project":"dev","msg":"approve plan","options":[]}"#),
+        (.askDone(block: "block:01a1"), #"{"t":"ask_done","block":"block:01a1"}"#),
+        (.answerResult(block: "block:01a1", ok: true, msg: nil), #"{"t":"answer_result","block":"block:01a1","ok":true}"#),
+        (.answerResult(block: "block:01a1", ok: false, msg: "没有这个窗格"),
+         #"{"t":"answer_result","block":"block:01a1","ok":false,"msg":"没有这个窗格"}"#),
+        (.answer(block: "block:01a1", keys: ["2"], text: nil), #"{"t":"answer","block":"block:01a1","keys":["2"]}"#),
+        (.answer(block: "block:01a1", keys: nil, text: "先别提交"), #"{"t":"answer","block":"block:01a1","text":"先别提交"}"#),
     ]
 
     static func object(_ json: Data) throws -> NSDictionary {
@@ -75,6 +85,12 @@ import Testing
         #expect(playing == .preview(state: "playing", msg: nil))
         let failed = try JSONDecoder().decode(ControlMessage.self, from: Data(#"{"t":"preview","state":"error","msg":"已取消"}"#.utf8))
         #expect(failed == .preview(state: "error", msg: "已取消"))
+    }
+
+    @Test func answerResultWithoutOkThrows() {
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ControlMessage.self, from: Data(#"{"t":"answer_result","block":"b"}"#.utf8))
+        }
     }
 
     @Test func unknownTypeDoesNotThrow() throws {

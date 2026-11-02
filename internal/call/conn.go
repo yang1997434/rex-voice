@@ -88,7 +88,8 @@ type server struct {
 	preview    *previewState // nil unless a voice.preview is running
 	nextSID    int
 	nextAttach uint32
-	notified   map[string]time.Time // block -> last notify sent to the relay
+	notified   map[string]time.Time     // block -> last notify sent to the relay
+	asks       map[string]tools.Blocked // Claude panes blocked now; resent to the phone after every hello
 }
 
 // Run keeps the Mac connected to the relay and serves calls until ctx is done; it returns ctx.Err().
@@ -120,8 +121,9 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	if cfg.Watch && !cfg.Echo {
-		s.notified = map[string]time.Time{}
-		go tools.Watch(ctx, cfg.Mac, watchEvery, func(b tools.Blocked) { s.post(func() { s.onBlocked(b) }) })
+		s.notified, s.asks = map[string]time.Time{}, map[string]tools.Blocked{}
+		go tools.Watch(ctx, cfg.Mac, watchEvery, func(b tools.Blocked) { s.post(func() { s.onBlocked(b) }) },
+			func(block string) { s.post(func() { s.onUnblocked(block) }) })
 	}
 
 	dialDone := make(chan struct{})
@@ -346,10 +348,13 @@ func (s *server) onPeerSalt(salt [16]byte) {
 
 func (s *server) onControl(plain []byte) {
 	var m struct {
-		T        string `json:"t"`
-		App      string `json:"app"`
-		Device   string `json:"device"`
-		DeviceID string `json:"device_id"`
+		T        string   `json:"t"`
+		App      string   `json:"app"`
+		Device   string   `json:"device"`
+		DeviceID string   `json:"device_id"`
+		Block    string   `json:"block"`
+		Keys     []string `json:"keys"`
+		Text     string   `json:"text"`
 		startReq
 	}
 	if err := json.Unmarshal(plain, &m); err != nil {
@@ -371,6 +376,8 @@ func (s *server) onControl(plain []byte) {
 		s.startPreview(m.startReq)
 	case "call.end":
 		s.endCall("user")
+	case "answer":
+		s.answer(m.Block, m.Keys, m.Text)
 	default:
 		s.log.Debug("unknown control", "t", m.T)
 	}
@@ -398,6 +405,9 @@ func (s *server) onHello(deviceID, app, device string) {
 	s.log.Info("phone hello", "app", app, "device", device)
 	if c := s.call; c != nil { // phone reconnected mid-call
 		s.sendCtl(map[string]any{"t": "status", "state": c.state})
+	}
+	for _, b := range s.asks {
+		s.sendAsk(b)
 	}
 }
 

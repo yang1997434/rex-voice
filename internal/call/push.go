@@ -2,6 +2,7 @@ package call
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,8 +15,9 @@ import (
 // What the Mac pushes on its own: the delayed hang_up, Claude-blocked alerts and show_file / show_link.
 
 const (
-	attachChunk = 60000 // type 4 payload per frame; with header and tag it stays under the relay's 64 KiB
-	blockedText = "（系统提示：%s 的 Claude 卡住了，等你回答：%s。用一句话告诉用户，问要不要听全文或替他回答）"
+	attachChunk    = 60000 // type 4 payload per frame; with header and tag it stays under the relay's 64 KiB
+	maxPushOptions = 4     // notify carries at most this many options, each cut to 40 runes
+	blockedText    = "（系统提示：%s 的 Claude 卡住了，等你回答：%s。用一句话告诉用户，问要不要听全文或替他回答）"
 )
 
 // onHangUpTool lets the model finish its goodbye: the call ends at the next TurnDone, or after hangupGrace.
@@ -35,9 +37,12 @@ func (s *server) onHangUpTool(reason string) {
 	})
 }
 
-// onBlocked tells the user a Claude is waiting: through the model in a call, else a notify the
-// relay turns into a push (at most one per pane per notifyEvery). The push carries no full question.
+// onBlocked tells the user a Claude is waiting: an ask control to the phone (call or not, so the app
+// can answer it), plus through the model in a call, else a notify the relay turns into a push (at
+// most one per pane per notifyEvery). The push carries no full question.
 func (s *server) onBlocked(b tools.Blocked) {
+	s.asks[b.Block] = b
+	s.sendAsk(b)
 	msg := strings.TrimSpace(b.Msg)
 	if msg == "" {
 		msg = "（没写问题）"
@@ -61,7 +66,65 @@ func (s *server) onBlocked(b tools.Blocked) {
 	}
 	s.notified[b.Block] = now
 	s.log.Info("claude blocked, notifying", "block", b.Block, "project", b.Project)
-	s.writeText(map[string]any{"t": "notify", "title": b.Project + " 的 Claude 在等你", "body": truncRunes(msg, 100)})
+	opts := make([]string, 0, maxPushOptions)
+	for _, o := range b.Options[:min(len(b.Options), maxPushOptions)] {
+		opts = append(opts, truncRunes(o, 40))
+	}
+	s.writeText(map[string]any{"t": "notify", "title": b.Project + " 的 Claude 在等你", "body": truncRunes(msg, 100),
+		"block": b.Block, "options": opts})
+}
+
+// onUnblocked: the pane is no longer waiting, so the app drops its question card.
+func (s *server) onUnblocked(block string) {
+	delete(s.asks, block)
+	s.phoneCtl(map[string]any{"t": "ask_done", "block": block})
+}
+
+func (s *server) sendAsk(b tools.Blocked) {
+	opts := b.Options
+	if opts == nil {
+		opts = []string{}
+	}
+	s.phoneCtl(map[string]any{"t": "ask", "block": b.Block, "session": b.Session, "project": b.Project,
+		"msg": truncRunes(strings.TrimSpace(b.Msg), 400), "options": opts})
+}
+
+// phoneCtl sends a control only to a phone that has said hello; otherwise it is dropped (the
+// phone gets every open ask again after its next hello).
+func (s *server) phoneCtl(v map[string]any) {
+	if s.tx == nil || !s.helloOK {
+		s.log.Info("phone offline, control dropped", "t", v["t"], "block", v["block"])
+		return
+	}
+	s.log.Info("to phone", "t", v["t"], "block", v["block"], "options", v["options"])
+	s.sendCtl(v)
+}
+
+// answer is the app answering a Claude's question without a call: keys through send_keys, else text
+// through send_to_pane, so both keep their gates and audit lines (source phone). The pane need not be
+// blocked (the user may type ahead); a pane that does not exist fails. Runs the tool off the Run goroutine.
+func (s *server) answer(block string, keys []string, text string) {
+	if s.cfg.Echo {
+		s.sendCtl(map[string]any{"t": "answer_result", "block": block, "ok": false, "msg": "Mac 在 echo 模式，不能回答"})
+		return
+	}
+	name, args := "send_to_pane", map[string]any{"block": block, "text": text}
+	if len(keys) > 0 {
+		name, args = "send_keys", map[string]any{"block": block, "keys": keys}
+	}
+	b, _ := json.Marshal(args)
+	go func() {
+		out := s.cfg.Tools.Call(tools.WithSource(s.ctx, "phone"), name, string(b))
+		var r struct{ Error, Refused string }
+		json.Unmarshal([]byte(out), &r)
+		msg := r.Error + r.Refused
+		s.log.Info("answer from phone", "block", block, "tool", name, "ok", msg == "", "msg", msg)
+		res := map[string]any{"t": "answer_result", "block": block, "ok": msg == ""}
+		if msg != "" {
+			res["msg"] = msg
+		}
+		s.post(func() { s.sendCtl(res) })
+	}()
 }
 
 // onRun runs f on the Run goroutine and waits for its result; for tools, which run off it.

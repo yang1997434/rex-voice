@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-// A claude-code pane is reported once per turn into blocked: staying blocked, a failed round and
-// other apps' blocked panes do not report; leaving and re-entering reports again.
+// A claude-code pane is reported once per turn into blocked, with the options on its screen: staying
+// blocked, a failed round and other apps' blocked panes do not report; leaving reports off once and
+// re-entering reports again.
 func TestWatchReportsEachTurnIntoBlocked(t *testing.T) {
 	home := t.TempDir()
 	os.MkdirAll(filepath.Join(home, ".claude", "sessions"), 0o700)
@@ -43,6 +45,8 @@ func TestWatchReportsEachTurnIntoBlocked(t *testing.T) {
 		case strings.Contains(cmd, "-b bA program_status"):
 			st := rounds[min(round, len(rounds)-1)]
 			return fmt.Appendf(nil, `{"records":[{"state":%q,"app":"claude-code","msg":"要不要继续？","owner":{"pid":77}}]}`, st), nil
+		case cmd == "rex capture -s s1 -b bA":
+			return os.ReadFile("testdata/capture_ask.txt")
 		case strings.Contains(cmd, "-b bB program_status"):
 			return []byte(`{"records":[{"state":"blocked","app":"codex","owner":{"pid":88}}]}`), nil
 		}
@@ -50,18 +54,52 @@ func TestWatchReportsEachTurnIntoBlocked(t *testing.T) {
 	}
 
 	var got []Blocked
+	var offs []string
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		Watch(ctx, Options{Exec: exec, Home: home}, time.Millisecond, func(b Blocked) { got = append(got, b) })
+		Watch(ctx, Options{Exec: exec, Home: home}, time.Millisecond, func(b Blocked) { got = append(got, b) },
+			func(b string) { offs = append(offs, b) })
 	}()
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Watch did not return after cancel")
 	}
-	want := Blocked{Block: "bA", Session: "dev", Project: "myproj", Msg: "要不要继续？"}
-	if len(got) != 2 || got[0] != want || got[1] != want {
+	want := Blocked{Block: "bA", Session: "dev", Project: "myproj", Msg: "要不要继续？", Options: []string{"面条", "米饭", "饺子"}}
+	if len(got) != 2 || !reflect.DeepEqual(got[0], want) || !reflect.DeepEqual(got[1], want) {
 		t.Fatalf("callbacks = %+v, want twice %+v", got, want)
+	}
+	if !reflect.DeepEqual(offs, []string{"bA"}) {
+		t.Fatalf("offs = %v, want [bA] once", offs)
+	}
+}
+
+// The two box formats seen on a real Claude Code 2.1 screen (2026-11-02): AskUserQuestion, whose
+// trailing "Type something." / "Chat about this" rows are dropped, and the indented plan approval.
+func TestParseOptions(t *testing.T) {
+	for file, want := range map[string][]string{
+		"capture_ask.txt":  {"面条", "米饭", "饺子"},
+		"capture_plan.txt": {"Yes, and switch to BYPASS PERMISSIONS (no further prompts) for this session", "Yes, manually approve edits", "Tell Claude what to change"},
+	} {
+		b, err := os.ReadFile(filepath.Join("testdata", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ParseOptions(string(b)); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: options = %q, want %q", file, got, want)
+		}
+	}
+}
+
+// A screen with no numbered box (a plain Claude turn) has no options, even with a numbered list
+// that does not start at 1.
+func TestParseOptionsNone(t *testing.T) {
+	b, err := os.ReadFile("testdata/capture_01a1926c.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ParseOptions(string(b) + "\n  2. 第二步\n  3. 第三步\n"); len(got) != 0 {
+		t.Fatalf("options = %q, want none", got)
 	}
 }

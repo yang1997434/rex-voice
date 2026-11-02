@@ -183,14 +183,14 @@ func (e *env) closePane(ctx context.Context, args json.RawMessage) (any, error) 
 			// A lookup that fails (rex timeout) is not "no status": refuse rather than close a working Claude blind.
 			st, err := e.programStatus(ctx, sid, b.ID)
 			if err != nil {
-				return e.audit(map[string]string{"refused": fmt.Sprintf("%s 查不到状态（%s），没敢关", b.ID, truncRunes(err.Error(), 80))}, "close_pane", a.Block, a.Scope, "refused"), nil
+				return e.audit(ctx, map[string]string{"refused": fmt.Sprintf("%s 查不到状态（%s），没敢关", b.ID, truncRunes(err.Error(), 80))}, "close_pane", a.Block, a.Scope, "refused"), nil
 			}
 			if st != nil && st.State == "working" {
 				doing := st.Msg
 				if doing == "" {
 					doing = "干活"
 				}
-				return e.audit(map[string]string{"refused": fmt.Sprintf("%s 正在 %s，要关请确认 force", b.ID, doing)}, "close_pane", a.Block, a.Scope, "refused"), nil
+				return e.audit(ctx, map[string]string{"refused": fmt.Sprintf("%s 正在 %s，要关请确认 force", b.ID, doing)}, "close_pane", a.Block, a.Scope, "refused"), nil
 			}
 		}
 	}
@@ -205,7 +205,7 @@ func (e *env) closePane(ctx context.Context, args json.RawMessage) (any, error) 
 	if _, err := e.Exec(ctx, "rex", cmd...); err != nil {
 		return nil, err
 	}
-	return e.audit(map[string]string{"closed": closed}, "close_pane", a.Block, a.Scope, "closed"), nil
+	return e.audit(ctx, map[string]string{"closed": closed}, "close_pane", a.Block, a.Scope, "closed"), nil
 }
 
 func (e *env) rename(ctx context.Context, args json.RawMessage) (any, error) {
@@ -290,5 +290,5 @@ func (e *env) sendKeys(ctx context.Context, args json.RawMessage) (any, error) {
 		return nil, err
 	}
 	keys := strings.Join(a.Keys, " ")
-	return e.audit(map[string]string{"sent": keys}, "send_keys", a.Block, keys, "sent"), nil
+	return e.audit(ctx, map[string]string{"sent": keys}, "send_keys", a.Block, keys, "sent"), nil
 }

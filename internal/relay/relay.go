@@ -155,7 +155,10 @@ func (h *Hub) pump(c *conn) string {
 
 // control handles a client text frame: phone sends push_token, mac sends notify; anything else is ignored.
 func (h *Hub) control(c *conn, data []byte) {
-	var m struct{ T, Token, Title, Body string }
+	var m struct {
+		T, Token, Title, Body, Block string
+		Options                      []string
+	}
 	if err := json.Unmarshal(data, &m); err != nil {
 		log.Printf("bad text frame role=%s id=%s err=%v", c.role, c.id[:6], err)
 		return
@@ -181,7 +184,7 @@ func (h *Hub) control(c *conn, data []byte) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := h.Notifier.Push(ctx, tok, m.Title, m.Body); err != nil {
+			if err := h.Notifier.Push(ctx, tok, Alert{Title: m.Title, Body: m.Body, Block: m.Block, Options: m.Options}); err != nil {
 				log.Printf("push fail id=%s err=%v", c.id[:6], err)
 				return
 			}

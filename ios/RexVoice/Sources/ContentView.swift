@@ -129,6 +129,7 @@ struct ContentView: View {
                 personaCard(phase, state: state, mood: mood)
                     .frame(width: cardWidth, height: cardWidth / 0.9)
                 VStack(spacing: 14) {
+                    AskCards(accent: mood.accent)
                     infoSection(phase, mood: mood)
                     Spacer(minLength: 0)
                     callButton(phase)
@@ -146,11 +147,13 @@ struct ContentView: View {
             if phase.inCall {
                 callBanner(phase, state: state, mood: mood)
                     .transition(.opacity.combined(with: .move(edge: .top)))
+                AskCards(accent: mood.accent)
                 dialog(mood).transition(.opacity)
             } else {
                 personaCard(phase, state: state, mood: mood)
                     .frame(maxHeight: .infinity)
                     .transition(.opacity)
+                AskCards(accent: mood.accent)
                 statusRow(phase, mood: mood)
             }
             callButton(phase)

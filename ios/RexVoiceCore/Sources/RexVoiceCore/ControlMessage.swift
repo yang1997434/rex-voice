@@ -11,6 +11,8 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case callEnd
     /// Voice sample outside a call; same optional fields as `callStart`.
     case voicePreview(provider: String?, model: String?, voice: String?, apiKey: String?, name: String? = nil)
+    /// Answers a blocked Claude pane without a call: `keys` (send_keys whitelist, e.g. ["2"]) or `text` (send_to_pane).
+    case answer(block: String, keys: [String]?, text: String?)
     // Mac -> phone
     /// `detail` is optional: the Mac side currently sends status without it.
     case status(state: String, detail: String?)
@@ -23,6 +25,12 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     /// An image follows in `chunks` type 4 frames carrying this `id`; `size` is the whole file in bytes.
     case attach(id: Int, name: String, mime: String, size: Int, chunks: Int)
     case link(url: String, title: String)
+    /// A Claude pane turned blocked; `options[i]` is picked by key i+1 (may be empty). Resent after every hello.
+    case ask(block: String, session: String, project: String, msg: String, options: [String])
+    /// That pane is no longer blocked.
+    case askDone(block: String)
+    /// Outcome of an `answer`; `msg` says why when `ok` is false.
+    case answerResult(block: String, ok: Bool, msg: String?)
     /// Any `t` this build does not know; decoding never throws for it.
     case unknown(String)
 
@@ -30,6 +38,7 @@ public enum ControlMessage: Codable, Equatable, Sendable {
         case t, app, device, deviceID = "device_id", state, detail, who, text, reason, msg
         case provider, model, voice, apiKey = "api_key"
         case id, name, mime, size, chunks, url, title
+        case block, session, project, options, keys, ok
     }
 
     public init(from decoder: any Decoder) throws {
@@ -69,6 +78,19 @@ public enum ControlMessage: Codable, Equatable, Sendable {
                            chunks: try c.decode(Int.self, forKey: .chunks))
         case "link":
             self = .link(url: try c.decode(String.self, forKey: .url), title: try c.decode(String.self, forKey: .title))
+        case "answer":
+            self = .answer(block: try c.decode(String.self, forKey: .block), keys: try c.decodeIfPresent([String].self, forKey: .keys),
+                           text: try c.decodeIfPresent(String.self, forKey: .text))
+        case "ask":
+            self = .ask(block: try c.decode(String.self, forKey: .block),
+                        session: try c.decodeIfPresent(String.self, forKey: .session) ?? "",
+                        project: try c.decodeIfPresent(String.self, forKey: .project) ?? "",
+                        msg: try c.decodeIfPresent(String.self, forKey: .msg) ?? "",
+                        options: try c.decodeIfPresent([String].self, forKey: .options) ?? [])
+        case "ask_done": self = .askDone(block: try c.decode(String.self, forKey: .block))
+        case "answer_result":
+            self = .answerResult(block: try c.decode(String.self, forKey: .block), ok: try c.decode(Bool.self, forKey: .ok),
+                                 msg: try c.decodeIfPresent(String.self, forKey: .msg))
         default: self = .unknown(t)
         }
     }
@@ -126,6 +148,26 @@ public enum ControlMessage: Codable, Equatable, Sendable {
             try c.encode("link", forKey: .t)
             try c.encode(url, forKey: .url)
             try c.encode(title, forKey: .title)
+        case let .answer(block, keys, text):
+            try c.encode("answer", forKey: .t)
+            try c.encode(block, forKey: .block)
+            try c.encodeIfPresent(keys, forKey: .keys)
+            try c.encodeIfPresent(text, forKey: .text)
+        case let .ask(block, session, project, msg, options):
+            try c.encode("ask", forKey: .t)
+            try c.encode(block, forKey: .block)
+            try c.encode(session, forKey: .session)
+            try c.encode(project, forKey: .project)
+            try c.encode(msg, forKey: .msg)
+            try c.encode(options, forKey: .options)
+        case let .askDone(block):
+            try c.encode("ask_done", forKey: .t)
+            try c.encode(block, forKey: .block)
+        case let .answerResult(block, ok, msg):
+            try c.encode("answer_result", forKey: .t)
+            try c.encode(block, forKey: .block)
+            try c.encode(ok, forKey: .ok)
+            try c.encodeIfPresent(msg, forKey: .msg)
         case let .unknown(t):
             try c.encode(t, forKey: .t)
         }

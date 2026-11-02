@@ -35,6 +35,24 @@ final class CallController {
     /// Last 5, cleared when a call starts.
     private(set) var attachments: [Attachment] = []
 
+    /// A Claude pane waiting on the user (Mac `ask`); answered from the card or a push action without a call.
+    struct Ask: Identifiable, Equatable {
+        enum Phase: Equatable { case open, sending, answered, failed(String) }
+        var id: String { block }
+        let block: String
+        let session: String
+        let project: String
+        let msg: String
+        /// `options[i]` is picked by key i+1.
+        let options: [String]
+        let time = Date()
+        var phase = Phase.open
+    }
+    /// Oldest first. The Mac resends every open one after each hello, so the list is rebuilt on every `.ready`.
+    private(set) var asks: [Ask] = []
+    /// The app's controller, for push actions that wake the app in the background before any view exists.
+    private(set) static var shared: CallController?
+
     enum PreviewState: Equatable { case idle, connecting, playing, failed(String) }
     /// Voice sample from the settings page: the Mac runs a short session, audio comes as type 0 frames.
     /// `failed` goes back to `idle` by itself after 3 s.
@@ -77,6 +95,8 @@ final class CallController {
         let timeout: Task<Void, Never>
     }
     @ObservationIgnored private var pending: [Int: PendingAttach] = [:]
+    /// `answer_result` per block, read by the `answer` waiting for it.
+    @ObservationIgnored private var answerResults: [String: (ok: Bool, msg: String?)] = [:]
 
     private static let thresholdKey = "energyThreshold"
     private static let pairingAccount = "pairing"
@@ -98,6 +118,7 @@ final class CallController {
         } catch {
             notice = error.localizedDescription
         }
+        Self.shared = self
     }
 
     var canToggleCall: Bool { inCall || link == .ready }
@@ -184,6 +205,44 @@ final class CallController {
         if let relay { Task { await relay.setPushToken(token) } }
     }
 
+    /// Answers a Claude's question: `keys` (e.g. ["2"], ["escape"]) or `text`. Waits up to 10 s for the link (a push
+    /// action may have just woken the app) and 12 s for `answer_result`, so it ends inside a 25 s background task.
+    /// Returns nil on success, else why it failed (also shown on the card).
+    @discardableResult
+    func answer(block: String, keys: [String]? = nil, text: String? = nil) async -> String? {
+        setAskPhase(block, .sending)
+        let failure = await sendAnswer(block: block, keys: keys, text: text)
+        if let failure {
+            setAskPhase(block, .failed(failure))
+            return failure
+        }
+        setAskPhase(block, .answered)
+        // 「已回答」 for 1.5 s, then the card waits for the Mac's ask_done (or takes another answer).
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            if self?.asks.first(where: { $0.block == block })?.phase == .answered { self?.setAskPhase(block, .open) }
+        }
+        return nil
+    }
+
+    private func sendAnswer(block: String, keys: [String]?, text: String?) async -> String? {
+        let deadline = Date().addingTimeInterval(10)
+        while link != .ready, Date() < deadline { try? await Task.sleep(for: .milliseconds(200)) }
+        guard link == .ready, let relay else { return link == .macOffline ? "Mac 不在线" : "连不上 Mac" }
+        answerResults[block] = nil
+        guard await relay.send(.answer(block: block, keys: keys, text: text)) else { return "没发出去" }
+        let wait = Date().addingTimeInterval(12)
+        while Date() < wait {
+            if let r = answerResults.removeValue(forKey: block) { return r.ok ? nil : (r.msg ?? "Mac 没执行") }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return "Mac 没回应"
+    }
+
+    private func setAskPhase(_ block: String, _ phase: Ask.Phase) {
+        if let i = asks.firstIndex(where: { $0.block == block }) { asks[i].phase = phase }
+    }
+
     func toggleCall() async {
         if inCall {
             await relay?.send(.callEnd)
@@ -264,6 +323,7 @@ final class CallController {
             if previewActive { endPreview(.failed("Mac 不在线")) }
         case .ready:
             link = .ready
+            asks = [] // the Mac resends every still-open ask right after this hello
             // The Mac keeps a call across a phone reconnect; call.start is idempotent there.
             if inCall, let relay, let startMessage { Task { await relay.send(startMessage) } }
         case let .failed(message):
@@ -366,7 +426,14 @@ final class CallController {
                 break
             }
             addAttachment(.link(u, title: title.isEmpty ? (u.host() ?? url) : title))
-        case .hello, .callStart, .callEnd, .voicePreview, .unknown:
+        case let .ask(block, session, project, msg, options):
+            let ask = Ask(block: block, session: session, project: project, msg: msg, options: options)
+            if let i = asks.firstIndex(where: { $0.block == block }) { asks[i] = ask } else { asks.append(ask) }
+        case let .askDone(block):
+            asks.removeAll { $0.block == block }
+        case let .answerResult(block, ok, msg):
+            answerResults[block] = (ok, msg)
+        case .hello, .callStart, .callEnd, .voicePreview, .answer, .unknown:
             break
         }
     }
@@ -439,6 +506,19 @@ extension CallController {
             attachments = [Attachment(kind: .image(shot, name: "geo-tests.png")),
                            Attachment(kind: .link(URL(string: "https://github.com/yang1997434/metis-va/pull/12")!,
                                                   title: "metis-va PR #12 迁移文件"))]
+        }
+        // `REXVOICE_ASK=1` shows one question card, `2` a second one behind it, `failed` the first one's failure.
+        // It also asks for notification permission, so `xcrun simctl push` can show the claude-ask actions unpaired.
+        if link == .ready, let n = ProcessInfo.processInfo.environment["REXVOICE_ASK"] {
+            enablePush()
+            asks = [Ask(block: "block:preview-1", session: "rex-voice", project: "metis-va",
+                        msg: "要不要把迁移文件 0042_add_tenant.sql 一起提交？提交后 CI 会跑迁移检查，大约 6 分钟。",
+                        options: ["一起提交", "先不提交，等我回去看", "只提交代码，迁移另开 PR"])]
+            if n == "2" {
+                asks.append(Ask(block: "block:preview-2", session: "geo", project: "geo", msg: "approve plan",
+                                options: ["Yes, and switch to BYPASS PERMISSIONS", "Yes, manually approve edits", "Tell Claude what to change"]))
+            }
+            if n == "failed" { asks[0].phase = .failed("没有这个窗格") }
         }
         // `REXVOICE_PREVIEW_STATE=connecting|playing|failed` freezes the voice-sample button; `incall` greys it.
         switch ProcessInfo.processInfo.environment["REXVOICE_PREVIEW_STATE"] {

@@ -20,9 +20,17 @@ import (
 	"time"
 )
 
+// Alert is one push. Block set (a Claude waiting on a question) makes it actionable: category
+// claude-ask, with block and options as custom keys the app answers with (protocol section 2).
+type Alert struct {
+	Title, Body string
+	Block       string
+	Options     []string
+}
+
 // Notifier sends one alert push to a device token.
 type Notifier interface {
-	Push(ctx context.Context, token, title, body string) error
+	Push(ctx context.Context, token string, a Alert) error
 }
 
 const (
@@ -91,15 +99,21 @@ func (a *APNS) token() (string, error) {
 	return a.jwt, nil
 }
 
-func (a *APNS) Push(ctx context.Context, token, title, body string) error {
+func (a *APNS) Push(ctx context.Context, token string, al Alert) error {
 	jwt, err := a.token()
 	if err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(map[string]any{"aps": map[string]any{
-		"alert": map[string]string{"title": title, "body": body},
-		"sound": "default",
-	}})
+	aps := map[string]any{"alert": map[string]string{"title": al.Title, "body": al.Body}, "sound": "default"}
+	p := map[string]any{"aps": aps}
+	if al.Block != "" {
+		aps["category"], aps["mutable-content"] = "claude-ask", 0
+		p["block"], p["options"] = al.Block, al.Options
+		if al.Options == nil {
+			p["options"] = []string{}
+		}
+	}
+	payload, _ := json.Marshal(p)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.url+"/3/device/"+token, bytes.NewReader(payload))
 	if err != nil {
 		return err
