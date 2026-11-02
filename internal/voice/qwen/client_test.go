@@ -324,6 +324,57 @@ func TestToolBatchOneCreate(t *testing.T) {
 	wait(t, turn, "TurnDone")
 }
 
+// 11-02 实测：工具结果后的 response.create 撞上用户在说话，服务端回 error；会话不能断，等用户说完再发。
+func TestCreateRefusedWhileSpeaking(t *testing.T) {
+	const refused = `{"type":"error","error":{"type":"invalid_request_error","code":"invalid_value","message":"Cannot create response while user is speaking."}}`
+	toolBatch := func(t *testing.T, f *fake) {
+		f.push(t, `{"type":"response.function_call_arguments.done","response_id":"r1","call_id":"c1","name":"a","arguments":"{}"}`,
+			`{"type":"response.done","response":{"id":"r1","status":"completed"}}`)
+		f.next(t) // function_call_output
+		if ev := f.next(t); ev["type"] != "response.create" {
+			t.Fatalf("want response.create, got %s", js(ev))
+		}
+		f.push(t, refused)
+	}
+	call := func(context.Context, string, string) string { return "{}" }
+	t.Run("resend on speech_stopped", func(t *testing.T) {
+		f := newFake(t, updated)
+		errs := make(chan error, 1)
+		s := f.dial(t, voice.Config{Call: call, Handlers: voice.Handlers{Error: func(e error) { errs <- e }}})
+		toolBatch(t, f)
+		f.quiet(t)
+		select {
+		case <-s.Done():
+			t.Fatal("session ended on a create refused while the user speaks")
+		case e := <-errs:
+			t.Fatalf("benign error reported: %v", e)
+		default:
+		}
+		f.push(t, `{"type":"input_audio_buffer.speech_stopped"}`)
+		if ev := f.next(t); ev["type"] != "response.create" {
+			t.Fatalf("want response.create after speech_stopped, got %s", js(ev))
+		}
+		f.push(t, `{"type":"input_audio_buffer.speech_stopped"}`)
+		f.quiet(t) // only once
+		f.push(t, `{"type":"error","error":{"code":"invalid_request_error","message":"Conversation already has an active response in progress: r9"}}`)
+		f.quiet(t)
+		select {
+		case <-s.Done():
+			t.Fatal("session ended on a create racing the server's own answer")
+		case e := <-errs:
+			t.Fatalf("benign error reported: %v", e)
+		default:
+		}
+	})
+	t.Run("server answers first", func(t *testing.T) {
+		f := newFake(t, updated)
+		f.dial(t, voice.Config{Call: call})
+		toolBatch(t, f)
+		f.push(t, `{"type":"response.created","response":{"id":"r2"}}`, `{"type":"input_audio_buffer.speech_stopped"}`)
+		f.quiet(t)
+	})
+}
+
 func TestToolTimeout(t *testing.T) {
 	old := toolTimeout
 	toolTimeout = 100 * time.Millisecond

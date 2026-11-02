@@ -26,6 +26,10 @@ const (
 	wGeoUS   = "window:01a1926c-0d38-7b00-9220-4256b9b2b00d"
 	newBlock = "block:01a19b96-5ef9-7065-b31f-b304826241c8" // from testdata/rex_run.json
 	bJob     = "block:01a19c00-0000-7000-8000-000000000b01" // rex-job pane whose msg is a bash command line
+
+	// testdata/rex_ls_typos.json: the live labels of 11-02 (rex-vioce is the user's spelling) plus a second geo us.
+	sVioce = "session:01a19c0a-0000-7000-8000-00000000a001"
+	sGeo   = "session:01a19c0a-0000-7000-8000-00000000a002"
 )
 
 // withShell puts the plain shell pane bShell into the jobs session.
@@ -499,8 +503,9 @@ func setupWorkspace(t *testing.T) (*Registry, *fakeExec, *bytes.Buffer, string) 
 func TestOpenPane(t *testing.T) {
 	r, f, _, home := setupWorkspace(t)
 	geo := filepath.Join(home, "data", "claude", "geo")
-	claudeCmd := "rex run -s geo us -c " + geo + " --label fix-login --focus=false --json -- claude --dangerously-skip-permissions -n fix-login"
-	shellCmd := "rex run -s " + sDev + " -c " + geo + " --label geo --focus=false --json --keep-open -- zsh -l"
+	f.resp["rex ls --json"] = "rex_ls_typos.json"
+	claudeCmd := "rex run -s " + sGeo + " -c " + geo + " --label fix-login --focus=false --json -- claude --dangerously-skip-permissions -n fix-login"
+	shellCmd := "rex run -s " + sVioce + " -c " + geo + " --label geo --focus=false --json --keep-open -- zsh -l"
 	f.resp[claudeCmd], f.resp[shellCmd] = "rex_run.json", "rex_run.json"
 
 	var got map[string]string
@@ -508,8 +513,8 @@ func TestOpenPane(t *testing.T) {
 	if got["block"] != newBlock || got["session"] != "geo us" {
 		t.Errorf("claude: %v", got)
 	}
-	call(t, r, "open_pane", `{"session":"`+sDev+`","project":"`+geo+`","kind":"shell"}`, &got)
-	if got["block"] != newBlock {
+	call(t, r, "open_pane", `{"session":"rex-voice","project":"`+geo+`","kind":"shell"}`, &got) // 11-02: Grok's spelling of rex-vioce
+	if got["block"] != newBlock || got["session"] != "rex-vioce" {
 		t.Errorf("shell: %v", got)
 	}
 	if runs := f.cmds("rex run"); strings.Join(runs, "\n") != claudeCmd+"\n"+shellCmd {
@@ -518,15 +523,16 @@ func TestOpenPane(t *testing.T) {
 }
 
 func TestOpenPaneRejected(t *testing.T) {
-	r, f, _, home := setupWorkspace(t)
+	r, f, _, _ := setupWorkspace(t)
 	wantError(t, call(t, r, "open_pane", `{"session":"x","project":"nope"}`, nil), "不是目录")
 	wantError(t, call(t, r, "open_pane", `{"session":"x","project":"notes.txt"}`, nil), "不是目录")
 	wantError(t, call(t, r, "open_pane", `{"session":"x","project":"../../.."}`, nil), "不在")
 	wantError(t, call(t, r, "open_pane", `{"session":"x","project":"/etc"}`, nil), "不在")
 	wantError(t, call(t, r, "open_pane", `{"session":"x","project":"geo","kind":"vim"}`, nil), "kind")
-	f.fail["rex run -s nosuch -c "+filepath.Join(home, "data", "claude", "geo")+" --label geo --focus=false --json -- claude --dangerously-skip-permissions"] = "session target \"nosuch\" not found"
-	wantError(t, call(t, r, "open_pane", `{"session":"nosuch","project":"geo"}`, nil), "not found")
-	if runs := f.cmds("rex run"); len(runs) != 1 {
+	wantError(t, call(t, r, "open_pane", `{"session":"nosuch","project":"geo"}`, nil), "没有这个会话: nosuch。现有会话：rex-voice-dev，jobs")
+	f.resp["rex ls --json"] = "rex_ls_typos.json"
+	wantError(t, call(t, r, "open_pane", `{"session":"geo","project":"geo"}`, nil), "对上了好几个：geo us，geo us stripe")
+	if runs := f.cmds("rex run"); len(runs) != 0 {
 		t.Errorf("rex run called for invalid input: %v", runs)
 	}
 }
@@ -591,10 +597,47 @@ func TestRename(t *testing.T) {
 	want := []string{
 		"rex block rename -s " + sDev + " -- " + bVoice + " voice",
 		"rex window rename -s " + sDev + " -- " + wGeoUS + " -geo",
-		"rex session rename -- rex-voice-dev dev",
+		"rex session rename -- " + sDev + " dev",
 	}
 	if c := append(f.cmds("rex block rename"), append(f.cmds("rex window"), f.cmds("rex session")...)...); strings.Join(c, "\n") != strings.Join(want, "\n") {
 		t.Errorf("commands:\n%s", strings.Join(c, "\n"))
+	}
+}
+
+// 11-02 实测 Grok 传 block:"2-0"、去掉 block: 前缀的 id。
+func TestResolveBlock(t *testing.T) {
+	r, f, _ := setup(t)
+	out := call(t, r, "read_pane", `{"block":"2-0"}`, nil)
+	wantError(t, out, "没有这个窗格: 2-0。现有窗格：rex-voice-dev/shell = "+bGeoUS)
+	wantError(t, out, "rex-voice-dev/rex-voice = "+bVoice)
+	wantError(t, call(t, r, "read_pane", `{"block":"01a1926"}`, nil), "没有这个窗格") // prefix under 8 chars
+	for _, b := range []string{strings.TrimPrefix(bGeoUS, "block:"), "01a1926c", " " + bGeoUS} {
+		if out := call(t, r, "read_pane", `{"block":"`+b+`"}`, nil); strings.Contains(out, `"error"`) {
+			t.Errorf("read_pane(%q) = %s", b, out)
+		}
+	}
+	var got map[string]string
+	call(t, r, "send_keys", `{"block":"01a19a0e-06a0","keys":["1"]}`, &got)
+	if c := f.cmds("rex send-key"); len(c) != 1 || c[0] != "rex send-key -s "+sDev+" -b "+bVoice+" 1" {
+		t.Errorf("send_keys commands: %v (%v)", c, got)
+	}
+}
+
+// 11-02 实测 Grok 把会话 rex-vioce 叫成 rex-voice。
+func TestResolveSession(t *testing.T) {
+	r, f, _ := setup(t)
+	f.resp["rex ls --json"] = "rex_ls_typos.json"
+	for in, want := range map[string]string{"rex-voice": sVioce, "REX-VIOCE": sVioce, "rexvioce": sVioce, sVioce: sVioce, "geo us": sGeo, "stripe": "session:01a19c0a-0000-7000-8000-00000000a003"} {
+		var got map[string]string
+		call(t, r, "rename", `{"target":"session","id":"`+in+`","name":"n"}`, &got)
+		if c := f.cmds("rex session rename"); len(c) == 0 || c[len(c)-1] != "rex session rename -- "+want+" n" {
+			t.Errorf("%q: %v %v", in, got, c)
+		}
+	}
+	wantError(t, call(t, r, "rename", `{"target":"session","id":"geo","name":"n"}`, nil), "对上了好几个：geo us，geo us stripe")
+	wantError(t, call(t, r, "rename", `{"target":"session","id":"metis","name":"n"}`, nil), "没有这个会话: metis。现有会话：rex-vioce，geo us，geo us stripe")
+	if n := len(f.cmds("rex session rename")); n != 6 {
+		t.Errorf("renamed %d times, want 6", n)
 	}
 }
 

@@ -63,6 +63,7 @@ type Session struct {
 	inflight atomic.Int32          // tool batches running; TurnDone waits until none are
 	resp     string                // response being generated
 	cut      string                // response interrupted by the user; its late audio is dropped
+	wantResp bool                  // a response.create was refused while the user spoke; resend on speech_stopped
 }
 
 // Dial connects, sends session.update and returns once session.updated arrives.
@@ -356,6 +357,7 @@ func (s *Session) loop() {
 			var r struct{ ID string }
 			json.Unmarshal(ev.Response, &r)
 			s.resp = r.ID
+			s.wantResp = false // the server started an answer on its own
 		case "response.text.delta":
 			if h.TextDelta != nil {
 				h.TextDelta(ev.Delta)
@@ -399,6 +401,13 @@ func (s *Session) loop() {
 			if h.SpeechStarted != nil {
 				h.SpeechStarted()
 			}
+		case "input_audio_buffer.speech_stopped":
+			if s.wantResp {
+				s.wantResp = false
+				if err := s.send(map[string]any{"type": "response.create"}); err != nil {
+					s.sendFailed("response.create", err)
+				}
+			}
 		case "response.function_call_arguments.done":
 			s.pending[ev.ResponseID] = append(s.pending[ev.ResponseID], funcCall{ev.CallID, ev.Name, ev.Arguments})
 		case "response.done":
@@ -415,6 +424,17 @@ func (s *Session) loop() {
 func (s *Session) onError(e *apiError) {
 	if m := strings.ToLower(e.String()); e != nil && (strings.Contains(m, "cancel") || strings.Contains(m, "no active response")) {
 		s.log.Debug("qwen: benign cancel error", "message", e.Message)
+		return
+	}
+	// 11-02 实测：工具结果后的 response.create 撞上用户在说话，服务端拒绝；等用户说完再发一次。
+	if e != nil && strings.Contains(strings.ToLower(e.Message), "while user is speaking") {
+		s.log.Info("qwen: response.create refused while user speaks, retry on speech_stopped", "message", e.Message)
+		s.wantResp = true
+		return
+	}
+	// 上面那次重发可能和语音检测自动起的回答撞车；服务端已在答，不算故障。
+	if e != nil && strings.Contains(strings.ToLower(e.Message), "already has an active response") {
+		s.log.Info("qwen: response.create while an answer is live", "message", e.Message)
 		return
 	}
 	if h := s.cfg.Handlers.Error; h != nil {

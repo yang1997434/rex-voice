@@ -44,8 +44,8 @@ func (e *env) controlTools() []Tool {
 		{
 			Name: "send_keys",
 			Description: "往窗格按键，用来回答 Claude 的提问框（AskUserQuestion）、计划审批、/model /effort 弹出的选择框：先 read_pane 看选项念给用户；" +
-				"按数字键直接选中那个编号的选项（不用再按 enter），或 up / down 移动高亮再 enter 选；escape 取消提问框，也能打断正在干活的 Claude；" +
-				"shift+tab 切换 Claude 的权限模式；ctrl+c 中断 shell 里的命令。keys 按顺序按，比如 [\"down\",\"enter\"]。y / n 在 Claude 提问框里不起作用，不支持。",
+				"按数字键直接选中那个编号的选项（不用再按 enter），先 read_pane 看清编号再按，不用 up / down 盲选；escape 取消提问框，也能打断正在干活的 Claude；" +
+				"shift+tab 切换 Claude 的权限模式；ctrl+c 中断 shell 里的命令。keys 按顺序按，比如 [\"2\"]。y / n 在 Claude 提问框里不起作用，不支持。",
 			Parameters: json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"keys":{"type":"array","minItems":1,"items":{"type":"string","enum":` + string(keys) + `}}},"required":["block","keys"],"additionalProperties":false}`),
 			Run:        e.sendKeys,
 		},
@@ -62,9 +62,6 @@ func (e *env) openPane(ctx context.Context, args json.RawMessage) (any, error) {
 	if err := decodeArgs(args, &a); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(a.Session) == "" {
-		return nil, errors.New("缺少 session")
-	}
 	dir, err := e.projectDir(a.Project)
 	if err != nil {
 		return nil, err
@@ -73,18 +70,23 @@ func (e *env) openPane(ctx context.Context, args json.RawMessage) (any, error) {
 	if label == "" {
 		label = filepath.Base(dir)
 	}
-	cmd := []string{"run", "-s", a.Session, "-c", dir, "--label", label, "--focus=false", "--json"}
+	var run []string
 	switch a.Kind {
 	case "", "claude":
-		cmd = append(cmd, "--", "claude", "--dangerously-skip-permissions")
+		run = []string{"--", "claude", "--dangerously-skip-permissions"}
 		if a.Name != "" {
-			cmd = append(cmd, "-n", label)
+			run = append(run, "-n", label)
 		}
 	case "shell":
-		cmd = append(cmd, "--keep-open", "--", "zsh", "-l")
+		run = []string{"--keep-open", "--", "zsh", "-l"}
 	default:
 		return nil, errors.New("kind 只能是 claude 或 shell")
 	}
+	sess, err := e.resolveSession(ctx, a.Session)
+	if err != nil {
+		return nil, err
+	}
+	cmd := append([]string{"run", "-s", sess.ID, "-c", dir, "--label", label, "--focus=false", "--json"}, run...)
 	// Verified 2026-11-02: -s takes a label or id; output is {"window_id", "block_ids":[…], "revision"}.
 	var v struct {
 		Blocks []string `json:"block_ids"`
@@ -95,7 +97,7 @@ func (e *env) openPane(ctx context.Context, args json.RawMessage) (any, error) {
 	if len(v.Blocks) == 0 {
 		return nil, errors.New("rex run 没返回新窗格的 block")
 	}
-	return map[string]string{"block": v.Blocks[0], "session": a.Session}, nil
+	return map[string]string{"block": v.Blocks[0], "session": sess.Label}, nil
 }
 
 // projectDir resolves a project name under Workspace, or an absolute path under Home, to an existing directory.
@@ -130,7 +132,7 @@ func (e *env) projectDir(project string) (string, error) {
 
 // locate returns block's session id, that session's blocks, and the block itself.
 func (e *env) locate(ctx context.Context, block string) (string, []rexBlock, rexBlock, error) {
-	sid, err := e.sessionOf(ctx, block)
+	sid, bid, err := e.resolveBlock(ctx, block)
 	if err != nil {
 		return "", nil, rexBlock{}, err
 	}
@@ -139,7 +141,7 @@ func (e *env) locate(ctx context.Context, block string) (string, []rexBlock, rex
 		return "", nil, rexBlock{}, err
 	}
 	for _, b := range bs {
-		if b.ID == block {
+		if b.ID == bid {
 			return sid, bs, b, nil
 		}
 	}
@@ -165,6 +167,7 @@ func (e *env) closePane(ctx context.Context, args json.RawMessage) (any, error) 
 	if err != nil {
 		return nil, err
 	}
+	a.Block = self.ID
 	targets := []rexBlock{self}
 	if a.Scope != "pane" {
 		targets = nil
@@ -224,7 +227,11 @@ func (e *env) rename(ctx context.Context, args json.RawMessage) (any, error) {
 	var cmd []string // "--" so a name starting with "-" is not parsed as a rex flag
 	switch a.Target {
 	case "session":
-		cmd = []string{"session", "rename", "--", a.ID, name}
+		s, err := e.resolveSession(ctx, a.ID)
+		if err != nil {
+			return nil, err
+		}
+		cmd = []string{"session", "rename", "--", s.ID, name}
 	case "window", "pane":
 		sid, _, self, err := e.locate(ctx, a.ID)
 		if err != nil {
@@ -233,7 +240,7 @@ func (e *env) rename(ctx context.Context, args json.RawMessage) (any, error) {
 		if a.Target == "window" {
 			cmd = []string{"window", "rename", "-s", sid, "--", self.Window, name}
 		} else {
-			cmd = []string{"block", "rename", "-s", sid, "--", a.ID, name}
+			cmd = []string{"block", "rename", "-s", sid, "--", self.ID, name}
 		}
 	default:
 		return nil, errors.New("target 只能是 session、window 或 pane")
@@ -266,10 +273,11 @@ func (e *env) sendKeys(ctx context.Context, args json.RawMessage) (any, error) {
 		}
 		a.Keys[i] = k
 	}
-	sid, err := e.sessionOf(ctx, a.Block)
+	sid, bid, err := e.resolveBlock(ctx, a.Block)
 	if err != nil {
 		return nil, err
 	}
+	a.Block = bid
 	// In a shell, enter would run whatever is sitting on the command line, bypassing send_to_pane's gate.
 	if !e.isClaudePane(ctx, sid, a.Block) {
 		for _, k := range a.Keys {

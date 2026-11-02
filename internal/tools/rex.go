@@ -144,27 +144,124 @@ func (e *env) blocks(ctx context.Context, sid string) ([]rexBlock, error) {
 	return v.Blocks, e.rexJSON(ctx, &v, "block", "ls", "-s", sid, "--json")
 }
 
-// sessionOf finds which Rex session holds block: rex only resolves a block inside its session (-s is required).
-func (e *env) sessionOf(ctx context.Context, block string) (string, error) {
+// resolveBlock maps the block the model passed to (session id, full block id); rex only resolves a block
+// inside its session (-s is required). Tried in order: as given, with the "block:" prefix added, then as a
+// unique prefix (>= 8 chars) of a real id without its prefix. 11-02 实测 Grok 传过 "2-0" 和去掉前缀的 id;
+// a miss lists every pane so the model can fix it in one step.
+func (e *env) resolveBlock(ctx context.Context, block string) (string, string, error) {
+	block = strings.TrimSpace(block)
 	if block == "" {
-		return "", errors.New("缺少 block")
+		return "", "", errors.New("缺少 block")
 	}
+	bare := strings.TrimPrefix(block, "block:")
 	ss, err := e.sessions(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	type hit struct{ sid, where, bid string }
+	var all, pre []hit
 	for _, s := range ss {
 		bs, err := e.blocks(ctx, s.ID)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		for _, b := range bs {
-			if b.ID == block {
-				return s.ID, nil
+			if b.ID == block || b.ID == "block:"+bare {
+				return s.ID, b.ID, nil
+			}
+			h := hit{s.ID, s.Label + "/" + b.Label, b.ID}
+			all = append(all, h)
+			if len(bare) >= 8 && strings.HasPrefix(strings.TrimPrefix(b.ID, "block:"), bare) {
+				pre = append(pre, h)
 			}
 		}
 	}
-	return "", errors.New("没有这个窗格: " + block)
+	if len(pre) == 1 {
+		return pre[0].sid, pre[0].bid, nil
+	}
+	var list []string
+	for i, h := range all {
+		if i == maxListed {
+			list = append(list, "…")
+			break
+		}
+		list = append(list, h.where+" = "+h.bid)
+	}
+	return "", "", fmt.Errorf("没有这个窗格: %s。现有窗格：%s", block, strings.Join(list, "，"))
+}
+
+const maxListed = 12 // panes or sessions named in a not-found error
+
+// resolveSession maps the session the model passed to a Rex session. Tried in order, each step needing a
+// single match: label or id as given, case-insensitive, equal after dropping spaces and hyphens, a unique
+// substring, then edit distance <= 2. 11-02 实测 Grok 把会话 rex-vioce 叫成 rex-voice。
+func (e *env) resolveSession(ctx context.Context, session string) (rexSession, error) {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return rexSession{}, errors.New("缺少 session")
+	}
+	ss, err := e.sessions(ctx)
+	if err != nil {
+		return rexSession{}, err
+	}
+	norm := func(x string) string { return strings.NewReplacer(" ", "", "-", "").Replace(strings.ToLower(x)) }
+	n := norm(session)
+	steps := []func(rexSession) bool{
+		func(s rexSession) bool { return s.Label == session || s.ID == session },
+		func(s rexSession) bool { return strings.EqualFold(s.Label, session) },
+		func(s rexSession) bool { return norm(s.Label) == n },
+		func(s rexSession) bool { return n != "" && strings.Contains(norm(s.Label), n) },
+		func(s rexSession) bool { return levenshtein(norm(s.Label), n) <= 2 },
+	}
+	for _, match := range steps {
+		var got []rexSession
+		for _, s := range ss {
+			if match(s) {
+				got = append(got, s)
+			}
+		}
+		if len(got) == 1 {
+			return got[0], nil
+		}
+		if len(got) > 1 {
+			return rexSession{}, fmt.Errorf("会话 %q 对上了好几个：%s，请说清是哪个", session, sessionLabels(got))
+		}
+	}
+	return rexSession{}, fmt.Errorf("没有这个会话: %s。现有会话：%s", session, sessionLabels(ss))
+}
+
+func sessionLabels(ss []rexSession) string {
+	var l []string
+	for i, s := range ss {
+		if i == maxListed {
+			l = append(l, "…")
+			break
+		}
+		l = append(l, s.Label)
+	}
+	return strings.Join(l, "，")
+}
+
+// levenshtein is the rune edit distance between a and b.
+func levenshtein(a, b string) int {
+	x, y := []rune(a), []rune(b)
+	prev := make([]int, len(y)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(x); i++ {
+		cur := make([]int, len(y)+1)
+		cur[0] = i
+		for j := 1; j <= len(y); j++ {
+			cost := 1
+			if x[i-1] == y[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(y)]
 }
 
 type progStatus struct {
@@ -277,10 +374,11 @@ func (e *env) readPane(ctx context.Context, args json.RawMessage) (any, error) {
 	if err := decodeArgs(args, &a); err != nil {
 		return nil, err
 	}
-	sid, err := e.sessionOf(ctx, a.Block)
+	sid, bid, err := e.resolveBlock(ctx, a.Block)
 	if err != nil {
 		return nil, err
 	}
+	a.Block = bid
 	out, err := e.Exec(ctx, "rex", "capture", "-s", sid, "-b", a.Block)
 	if err != nil {
 		return nil, err
@@ -327,10 +425,11 @@ func (e *env) sendToPane(ctx context.Context, args json.RawMessage) (any, error)
 	if strings.TrimSpace(a.Text) == "" {
 		return nil, errors.New("text 是空的")
 	}
-	sid, err := e.sessionOf(ctx, a.Block)
+	sid, bid, err := e.resolveBlock(ctx, a.Block)
 	if err != nil {
 		return nil, err
 	}
+	a.Block = bid
 	// Claude panes pass: deploy instructions to Claude are gated by the prompt's read-back-and-confirm.
 	if !e.isClaudePane(ctx, sid, a.Block) && e.forbids(a.Text) {
 		return e.audit(map[string]string{"refused": refusedMsg}, "send_to_pane", a.Block, a.Text, "refused"), nil

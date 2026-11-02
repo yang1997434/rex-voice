@@ -243,10 +243,11 @@ func (e *env) readClaude(ctx context.Context, args json.RawMessage) (any, error)
 	rexState := ""
 	switch {
 	case a.Block != "":
-		sid, err := e.sessionOf(ctx, a.Block)
+		sid, bid, err := e.resolveBlock(ctx, a.Block)
 		if err != nil {
 			return nil, err
 		}
+		a.Block = bid
 		st, err := e.programStatus(ctx, sid, a.Block)
 		if err != nil {
 			return nil, err

@@ -1,0 +1,16 @@
+{
+  "sessions": [
+    {
+      "session_id": "session:01a19c0a-0000-7000-8000-00000000a001",
+      "label": "rex-vioce"
+    },
+    {
+      "session_id": "session:01a19c0a-0000-7000-8000-00000000a002",
+      "label": "geo us"
+    },
+    {
+      "session_id": "session:01a19c0a-0000-7000-8000-00000000a003",
+      "label": "geo us stripe"
+    }
+  ]
+}
