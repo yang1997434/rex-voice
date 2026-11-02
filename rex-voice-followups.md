@@ -65,3 +65,10 @@
 - [ ] 供应商 logo 现在是自绘占位（品牌色圆底 + 白字形）；用户给官方素材后换 ProviderLogo.glyph。
 - [ ] read_claude 去噪的听感（「代码」「某文件」「链接」替换词）要用户真机用几天再调。
 - [ ] 测试会话 voicetest-sess（窗格 voicetest）还开着，给语音测试用；不用了 `rex session kill`。
+
+## 2026-11-02 第四批（通话质量 + 设计稿 J/K）
+- 已做：千问「Cannot create response while user is speaking」不再断线（speech_stopped 后补发一次）；block / session 模糊解析（子串 → 编辑距离，错 id 直接报错不猜）；提示词改 `/model <别名>`、选择框按数字键、切模型 / 档位先说「这会改默认」、确认必须来自用户下一句。
+- 待定：`/model` 与 `/effort` 会写进 `~/.claude/settings.json` 改所有新会话默认；要只改本会话得走裸 `/model` 选择框 + `s` 键（盲导航）。用户拍板后再改。
+- 待定：K 版环境卡「N 个 Claude 在跑 / 在等你」要 Mac → 手机加一条窗格摘要消息（协议改动），选 K 才做。
+- 待做：设计稿定稿后实现 0.3.2（J/K worktree `agent-aac6c836a82f56a74` 未合）；轮盘展开时磨砂圆底右边出屏、K 轮盘盖住环境卡；J duo 通话右上黑点来源待查；本仓 E2E 清单补轮盘一条。
+- 测试记录：四家同一套四轮语音测试（开标签 → 切模型 → 看模型 → 关掉挂断，合成语音）结果见 vault 待补；Grok 的 ASR 把第一句中文听成「Set voice to」。
