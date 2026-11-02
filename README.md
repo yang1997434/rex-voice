@@ -112,3 +112,7 @@ rm -rf ~/Library/Application\ Support/rex-voice ~/Library/Logs/rex-voice ~/.loca
 **花多少钱？** 每轮回答的用量记在 `~/Library/Logs/rex-voice/usage.log`（含估算美元）。
 
 **不用手机先试试？** `rex-voiced chat` 是文字版，打字问它同样的问题。
+
+## 署名
+
+App 图标用 gpt-image-2.5 基于「Claude大小姐」半身素材生成。素材：Claude大小姐的日记本（github.com/opsCar/claude-daxiaojie-assets）· 角色设定：ZipZipPipe（胖次狐）· 设定图：lmy414/ai-chan-sheets · CC BY-NC-SA 4.0。该协议是非商用的，本 app 仅内测自用；若要商用须换图标。
