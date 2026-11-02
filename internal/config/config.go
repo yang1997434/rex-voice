@@ -1,5 +1,5 @@
 // Package config is the per-user settings of rex-voiced: config.json in the config directory
-// (shared with pair.json) and the OpenAI key in the macOS Keychain.
+// (shared with pair.json) and the fallback provider API keys in the macOS Keychain.
 package config
 
 import (
@@ -14,19 +14,19 @@ import (
 )
 
 type Config struct {
-	Name           string            `json:"name,omitempty"`  // how the model addresses the user
-	Model          string            `json:"model,omitempty"` // OpenAI Realtime model
-	Relay          string            `json:"relay,omitempty"` // relay WebSocket URL
-	Voice          string            `json:"voice,omitempty"`
+	Name           string            `json:"name,omitempty"`            // how the model addresses the user
+	Provider       string            `json:"provider,omitempty"`        // realtime voice provider: openai | qwen | doubao
+	Model          string            `json:"model,omitempty"`           // provider's model; empty = the provider's default
+	Relay          string            `json:"relay,omitempty"`           // relay WebSocket URL
+	Voice          string            `json:"voice,omitempty"`           // empty = the provider's default
 	ProjectAliases map[string]string `json:"project_aliases,omitempty"` // project name → one-line description for the prompt
 	ForbidExtra    []string          `json:"forbid_extra,omitempty"`    // more words send_to_pane refuses, on top of the built-in list
 }
 
 const (
-	DefaultModel = "gpt-realtime-2.1"
-	DefaultRelay = "wss://r.maruiao.top/_voice/ws"
-	DefaultVoice = "marin"
-	fileName     = "config.json"
+	DefaultProvider = "openai"
+	DefaultRelay    = "wss://r.maruiao.top/_voice/ws"
+	fileName        = "config.json"
 )
 
 // Dir picks the config directory: flag value, then env REX_VOICE_HOME, then ~/Library/Application Support/rex-voice.
@@ -64,17 +64,15 @@ func Read(dir string) (Config, error) {
 	return c, nil
 }
 
-// Load is Read with defaults filled into empty fields.
+// Load is Read with defaults filled into empty fields. Model and Voice stay empty: their defaults
+// depend on the provider (voice.Defaults), which call.start may change.
 func Load(dir string) (Config, error) {
 	c, err := Read(dir)
-	if c.Model == "" {
-		c.Model = DefaultModel
+	if c.Provider == "" {
+		c.Provider = DefaultProvider
 	}
 	if c.Relay == "" {
 		c.Relay = DefaultRelay
-	}
-	if c.Voice == "" {
-		c.Voice = DefaultVoice
 	}
 	return c, err
 }
@@ -119,9 +117,9 @@ type Keychain struct {
 	Exec func(stdin string, args ...string) ([]byte, error)
 }
 
-// OpenAIKeychain is the item setup writes and serve reads.
-func OpenAIKeychain() Keychain {
-	return Keychain{Service: "rex-voice", Account: "openai", Exec: runSecurity}
+// ProviderKeychain is the item setup writes and serve reads for provider p; the account is the provider name.
+func ProviderKeychain(p string) Keychain {
+	return Keychain{Service: "rex-voice", Account: p, Exec: runSecurity}
 }
 
 func runSecurity(stdin string, args ...string) ([]byte, error) {
@@ -162,19 +160,27 @@ func (k Keychain) Delete() error {
 	return err
 }
 
-// OpenAIKey looks in env OPENAI_API_KEY, then the Keychain; source is "env" or "keychain".
-func OpenAIKey(getenv func(string) string, kc Keychain) (key, source string, err error) {
-	if v := getenv("OPENAI_API_KEY"); v != "" {
-		return v, "env", nil
+// keyEnv is the environment variable that overrides the Keychain, per provider.
+var keyEnv = map[string]string{"openai": "OPENAI_API_KEY", "qwen": "DASHSCOPE_API_KEY", "doubao": "DOUBAO_API_KEY"}
+
+// KeyEnv is provider p's API key environment variable; empty for an unknown provider.
+func KeyEnv(p string) string { return keyEnv[p] }
+
+// ProviderKey looks in provider p's env variable (KeyEnv), then the Keychain; source is "env" or "keychain".
+func ProviderKey(getenv func(string) string, kc Keychain, p string) (key, source string, err error) {
+	if e := keyEnv[p]; e != "" {
+		if v := getenv(e); v != "" {
+			return v, "env", nil
+		}
 	}
 	key, err = kc.Get()
 	switch {
 	case errors.Is(err, ErrNotFound):
-		return "", "", errors.New("没有 OpenAI key：先运行 rex-voiced setup")
+		return "", "", fmt.Errorf("没有 %s key：先运行 rex-voiced setup -provider %s，或在手机设置里填", p, p)
 	case err != nil:
-		return "", "", fmt.Errorf("从钥匙串读 OpenAI key 失败：%w", err)
+		return "", "", fmt.Errorf("从钥匙串读 %s key 失败：%w", p, err)
 	case key == "":
-		return "", "", errors.New("钥匙串里的 OpenAI key 是空的：重新运行 rex-voiced setup")
+		return "", "", fmt.Errorf("钥匙串里的 %s key 是空的：重新运行 rex-voiced setup -provider %s", p, p)
 	}
 	return key, "keychain", nil
 }

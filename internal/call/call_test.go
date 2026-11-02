@@ -7,21 +7,24 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"golang.org/x/net/websocket"
 
-	"github.com/yang1997434/rex-voice/internal/openai"
 	"github.com/yang1997434/rex-voice/internal/pair"
 	"github.com/yang1997434/rex-voice/internal/relay"
 	"github.com/yang1997434/rex-voice/internal/tools"
+	"github.com/yang1997434/rex-voice/internal/voice"
+	_ "github.com/yang1997434/rex-voice/internal/voice/openai"
 )
 
 const wait = 3 * time.Second
@@ -43,6 +46,7 @@ func set(t *testing.T, v *time.Duration, d time.Duration) {
 
 type aiConn struct {
 	ws     *websocket.Conn
+	auth   string // Authorization header of the upgrade
 	got    chan map[string]any
 	closed chan struct{}
 }
@@ -55,7 +59,7 @@ type fakeAI struct {
 func newFakeAI(t *testing.T) *fakeAI {
 	f := &fakeAI{conns: make(chan *aiConn, 4)}
 	f.srv = httptest.NewServer(websocket.Handler(func(ws *websocket.Conn) {
-		c := &aiConn{ws: ws, got: make(chan map[string]any, 1000), closed: make(chan struct{})}
+		c := &aiConn{ws: ws, auth: ws.Request().Header.Get("Authorization"), got: make(chan map[string]any, 1000), closed: make(chan struct{})}
 		defer close(c.closed)
 		f.conns <- c
 		for {
@@ -154,8 +158,8 @@ func startWith(t *testing.T, echo bool, deviceID string, h http.Handler, mods ..
 	cfg := Config{Pairing: e.p, PairingPath: e.path, RelayURL: e.relayURL, Echo: echo, Tools: &tools.Registry{}}
 	if !echo {
 		e.ai = newFakeAI(t)
-		cfg.OpenAI = openai.Config{Model: "gpt-realtime-2.1", Key: "test-key", Instructions: "base prompt",
-			URL: "ws" + strings.TrimPrefix(e.ai.srv.URL, "http")}
+		cfg.Voice = voice.Config{Provider: voice.OpenAI, Model: "gpt-realtime-2.1", Key: "test-key", Instructions: "base prompt",
+			Extra: map[string]string{"url": "ws" + strings.TrimPrefix(e.ai.srv.URL, "http")}}
 	}
 	for _, m := range mods {
 		m(&cfg)
@@ -424,11 +428,11 @@ func TestCallAudioBothWays(t *testing.T) {
 func TestSpeechStartedInterruptsAndTruncates(t *testing.T) {
 	e := start(t, false, "")
 	ph, ai := e.inCall(t)
-	ai.push(t, delta("it1", pattern(2500, 0))) // two 960-byte frames go out = 40 ms; 580 bytes held
+	ai.push(t, delta("it1", pattern(2500, 0))) // 2500 bytes handed out = 52 ms
 	ai.push(t, `{"type":"input_audio_buffer.speech_started"}`)
 	ph.ctlUntil(t, "interrupt")
 	tr := ai.next(t, "conversation.item.truncate")
-	if tr["item_id"] != "it1" || tr["audio_end_ms"] != float64(40) {
+	if tr["item_id"] != "it1" || tr["audio_end_ms"] != float64(52) {
 		t.Fatalf("truncate = %v", tr)
 	}
 	ai.push(t, delta("it1", pattern(960, 50))) // late delta of the cut item: dropped
@@ -514,7 +518,7 @@ func TestOpenAIDropEndsCall(t *testing.T) {
 }
 
 func TestRotateSession(t *testing.T) {
-	set(t, &rotateAfter, 300*time.Millisecond)
+	set(t, &rotateMargin, 60*time.Minute-300*time.Millisecond) // OpenAI's MaxAge is 60 minutes
 	e := start(t, false, "")
 	ph, ai1 := e.inCall(t)
 	ai1.push(t, `{"type":"response.output_audio_transcript.done","transcript":"八个窗格在跑"}`)
@@ -529,6 +533,65 @@ func TestRotateSession(t *testing.T) {
 	ai1.waitClosed(t)
 	ph.audio(t, pattern(960, 3))
 	ai2.next(t, "input_audio_buffer.append")
+}
+
+// Protocol section 3: an unknown provider is refused before anything is dialed and the call stays ended.
+func TestCallStartUnknownProvider(t *testing.T) {
+	e := start(t, false, "")
+	ph := e.ready(t)
+	ph.ctl(t, map[string]any{"t": "call.start", "provider": "nope"})
+	for {
+		typ, plain := ph.next(t)
+		if typ != pair.TypeControl {
+			continue
+		}
+		var m map[string]any
+		json.Unmarshal(plain, &m)
+		if m["t"] != "error" || m["msg"] != "不支持的供应商: nope" {
+			t.Fatalf("first control after call.start = %s", plain)
+		}
+		break
+	}
+	select {
+	case <-e.ai.conns:
+		t.Fatal("dialed a provider for an unknown one")
+	case <-time.After(200 * time.Millisecond):
+	}
+	ph.ctl(t, map[string]any{"t": "call.start"}) // not stuck in a call: a valid start dials
+	e.ai.accept(t)
+	ph.expectStatus(t, "connecting")
+}
+
+// syncBuf is a log sink the test can read while Run writes to it.
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (w *syncBuf) Write(p []byte) (int, error) { w.mu.Lock(); defer w.mu.Unlock(); return w.b.Write(p) }
+func (w *syncBuf) String() string              { w.mu.Lock(); defer w.mu.Unlock(); return w.b.String() }
+
+// call.start's api_key wins over config.json's key, only for that call, and is never logged.
+func TestCallStartAPIKeyOverridesConfig(t *testing.T) {
+	logs := &syncBuf{}
+	e := startWith(t, false, "", relay.NewHub(), func(c *Config) {
+		c.Logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	})
+	ph := e.ready(t)
+	for _, tc := range []struct{ apiKey, want string }{{"phone-key-123", "Bearer phone-key-123"}, {"", "Bearer test-key"}} {
+		ph.ctl(t, map[string]any{"t": "call.start", "provider": "openai", "api_key": tc.apiKey})
+		ai := e.ai.accept(t)
+		if ai.auth != tc.want {
+			t.Fatalf("api_key %q: Authorization = %q, want %q", tc.apiKey, ai.auth, tc.want)
+		}
+		ph.expectStatus(t, "connecting", "listening")
+		ph.ctl(t, map[string]any{"t": "call.end"})
+		ph.expectStatus(t, "ended")
+		ai.waitClosed(t)
+	}
+	if strings.Contains(logs.String(), "phone-key-123") {
+		t.Fatal("api_key written to the log")
+	}
 }
 
 func TestEcho(t *testing.T) {

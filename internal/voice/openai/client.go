@@ -1,5 +1,6 @@
-// Package openai is the Mac-side OpenAI Realtime WebSocket client (docs/protocol.md section 4):
-// session setup, audio/text in and out, tool-call batching, context pruning and usage accounting.
+// Package openai is the Mac-side OpenAI Realtime WebSocket client (docs/protocol.md section 4.1):
+// session setup, audio/text in and out, truncation on barge-in, tool-call batching, context pruning
+// and usage accounting. It registers itself as voice provider "openai".
 package openai
 
 import (
@@ -8,9 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,8 +19,10 @@ import (
 
 	"golang.org/x/net/websocket"
 
-	"github.com/yang1997434/rex-voice/internal/tools"
+	"github.com/yang1997434/rex-voice/internal/voice"
 )
+
+func init() { voice.Register(voice.OpenAI, Dial) }
 
 const defaultURL = "wss://api.openai.com/v1/realtime"
 
@@ -32,38 +35,16 @@ var (
 
 const maxTurns = 50
 
-// Handlers are called serially on the event goroutine; keep them short (AudioDelta should only hand off to a channel).
-type Handlers struct {
-	AudioDelta    func(itemID string, pcm []byte)
-	TextDelta     func(string)
-	AssistantText func(text string) // final text of one response: output_text in text mode, audio transcript in voice mode
-	UserText      func(string)      // input audio transcription completed
-	SpeechStarted func()
-	ResponseDone  func(Usage)
-	TurnDone      func() // a response finished with no tool calls left to run: the model is done answering
-	Error         func(error)
-}
-
-type Config struct {
-	Model, Key, Instructions, Voice string
-	Tools                           []tools.ToolDef
-	TextOnly                        bool
-	Transcribe                      bool
-	Logger                          *slog.Logger
-	Handlers                        Handlers
-	Call                            func(ctx context.Context, name, args string) string // tools.Registry.Call
-	KeepToolOutputs                 bool                                                // disable pruning of tool items (for A/B)
-	UsageLog                        io.Writer                                           // one JSON line per response.done
-	Version                         string                                              // User-Agent rex-voiced/<Version>, default "dev"
-	URL                             string                                              // default wss://api.openai.com/v1/realtime
-}
-
-type Turn struct{ Role, Text string }
+const (
+	maxAge     = 60 * time.Minute // OpenAI's session cap
+	bytesPerMs = 48               // PCM16 mono 24 kHz
+)
 
 type funcCall struct{ itemID, callID, name, args string }
 
 type Session struct {
-	cfg    Config
+	cfg    voice.Config
+	keep   bool // Extra keep_tool_outputs: disable pruning of tool items (for A/B)
 	log    *slog.Logger
 	ws     *websocket.Conn
 	start  time.Time
@@ -75,17 +56,28 @@ type Session struct {
 
 	mu     sync.Mutex
 	closed bool
-	turns  []Turn
+	turns  []voice.Turn
 
 	// Owned by the event goroutine.
 	pending   map[string][]funcCall // response_id -> function calls seen in that response
 	toolItems []string              // function_call + function_call_output item ids awaiting pruning
 	text      strings.Builder
 	inflight  atomic.Int32 // tool batches running; pruning waits until none are
+	item      string       // assistant audio item being streamed
+	itemBytes int          // bytes of item handed to AudioDelta, for truncation
+	cut       string       // item interrupted by the user; its late deltas are dropped
 }
 
 // Dial connects, sends session.update and returns once session.updated arrives.
-func Dial(ctx context.Context, cfg Config) (*Session, error) {
+func Dial(ctx context.Context, cfg voice.Config) (voice.Session, error) {
+	s, err := dial(ctx, cfg)
+	if err != nil {
+		return nil, err // not a typed nil inside the interface
+	}
+	return s, nil
+}
+
+func dial(ctx context.Context, cfg voice.Config) (*Session, error) {
 	if cfg.Key == "" || cfg.Model == "" {
 		return nil, errors.New("openai: Key and Model are required")
 	}
@@ -95,14 +87,22 @@ func Dial(ctx context.Context, cfg Config) (*Session, error) {
 	if cfg.Voice == "" {
 		cfg.Voice = "marin"
 	}
-	if cfg.URL == "" {
-		cfg.URL = defaultURL
+	u := cfg.Extra["url"]
+	if u == "" {
+		u = defaultURL
+	}
+	var keep bool
+	if v := cfg.Extra["keep_tool_outputs"]; v != "" {
+		var err error
+		if keep, err = strconv.ParseBool(v); err != nil {
+			return nil, fmt.Errorf("openai: Extra keep_tool_outputs: %w", err)
+		}
 	}
 	log := cfg.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	wc, err := websocket.NewConfig(cfg.URL+"?model="+url.QueryEscape(cfg.Model), "https://api.openai.com")
+	wc, err := websocket.NewConfig(u+"?model="+url.QueryEscape(cfg.Model), "https://api.openai.com")
 	if err != nil {
 		return nil, fmt.Errorf("openai: %w", err)
 	}
@@ -113,7 +113,7 @@ func Dial(ctx context.Context, cfg Config) (*Session, error) {
 		return nil, fmt.Errorf("openai: dial: %w", err)
 	}
 	sctx, cancel := context.WithCancel(context.Background())
-	s := &Session{cfg: cfg, log: log, ws: ws, start: time.Now(), ctx: sctx, cancel: cancel,
+	s := &Session{cfg: cfg, keep: keep, log: log, ws: ws, start: time.Now(), ctx: sctx, cancel: cancel,
 		done: make(chan struct{}), pending: map[string][]funcCall{}}
 	if err := s.setup(ctx); err != nil {
 		cancel()
@@ -173,20 +173,25 @@ func (s *Session) sessionConfig() map[string]any {
 	return c
 }
 
-// Age is the time since Dial; OpenAI caps a session at 60 minutes.
+// Age is the time since Dial.
 func (s *Session) Age() time.Duration { return time.Since(s.start) }
+
+func (s *Session) MaxAge() time.Duration { return maxAge }
+
+// SetMuted is a no-op: server VAD only needs the session layer's silence fill.
+func (s *Session) SetMuted(bool) error { return nil }
 
 // Done is closed when the event loop has stopped (read error or Close).
 func (s *Session) Done() <-chan struct{} { return s.done }
 
 // RecentTurns returns up to n of the latest user/assistant texts, oldest first.
-func (s *Session) RecentTurns(n int) []Turn {
+func (s *Session) RecentTurns(n int) []voice.Turn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if n > len(s.turns) {
 		n = len(s.turns)
 	}
-	return append([]Turn(nil), s.turns[len(s.turns)-n:]...)
+	return append([]voice.Turn(nil), s.turns[len(s.turns)-n:]...)
 }
 
 func (s *Session) addTurn(role, text string) {
@@ -194,7 +199,7 @@ func (s *Session) addTurn(role, text string) {
 		return
 	}
 	s.mu.Lock()
-	s.turns = append(s.turns, Turn{role, text})
+	s.turns = append(s.turns, voice.Turn{Role: role, Text: text})
 	if len(s.turns) > maxTurns {
 		s.turns = s.turns[len(s.turns)-maxTurns:]
 	}
@@ -214,7 +219,7 @@ func (s *Session) SendText(text string) error {
 	return s.send(map[string]any{"type": "response.create"})
 }
 
-func (s *Session) Truncate(itemID string, audioEndMs int) error {
+func (s *Session) truncate(itemID string, audioEndMs int) error {
 	return s.send(map[string]any{"type": "conversation.item.truncate", "item_id": itemID, "content_index": 0, "audio_end_ms": audioEndMs})
 }
 
@@ -316,8 +321,15 @@ func (s *Session) loop() {
 				s.log.Warn("openai: bad audio delta", "err", err)
 				continue
 			}
+			if ev.ItemID == s.cut {
+				continue
+			}
+			if ev.ItemID != s.item {
+				s.item, s.itemBytes = ev.ItemID, 0
+			}
+			s.itemBytes += len(pcm)
 			if h.AudioDelta != nil {
-				h.AudioDelta(ev.ItemID, pcm)
+				h.AudioDelta(pcm)
 			}
 		case "response.output_audio_transcript.done":
 			s.addTurn("assistant", ev.Transcript)
@@ -330,6 +342,7 @@ func (s *Session) loop() {
 				h.UserText(ev.Transcript)
 			}
 		case "input_audio_buffer.speech_started":
+			s.onSpeechStarted()
 			if h.SpeechStarted != nil {
 				h.SpeechStarted()
 			}
@@ -345,6 +358,18 @@ func (s *Session) loop() {
 			s.log.Debug("openai: event", "type", ev.Type, "bytes", len(raw))
 		}
 	}
+}
+
+// onSpeechStarted truncates the answer being played to what was handed out (protocol section 4.1):
+// in WebSocket mode the server does not cut it by itself.
+func (s *Session) onSpeechStarted() {
+	if s.item != "" {
+		if err := s.truncate(s.item, s.itemBytes/bytesPerMs); err != nil {
+			s.sendFailed("conversation.item.truncate", err)
+		}
+		s.cut = s.item
+	}
+	s.item, s.itemBytes = "", 0
 }
 
 func (s *Session) onError(e *apiError) {
@@ -386,7 +411,7 @@ func (s *Session) onResponseDone(ev event) {
 	u := r.Usage.toUsage(s.cfg.Model)
 	s.writeUsage(u)
 	if h.ResponseDone != nil {
-		h.ResponseDone(u)
+		h.ResponseDone(u.public())
 	}
 	calls := s.pending[r.ID]
 	delete(s.pending, r.ID)
@@ -398,6 +423,7 @@ func (s *Session) onResponseDone(ev event) {
 		return // another tool batch is still running; its final answer will prune
 	}
 	s.prune()
+	s.item, s.itemBytes = "", 0 // answer fully sent: a later barge-in has nothing to cut
 	if h.TurnDone != nil {
 		h.TurnDone()
 	}

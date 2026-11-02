@@ -14,7 +14,7 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{Model: DefaultModel, Relay: DefaultRelay, Voice: DefaultVoice}
+	want := Config{Provider: DefaultProvider, Relay: DefaultRelay}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got %+v want %+v", c, want)
 	}
@@ -27,7 +27,7 @@ func TestLoadMergesPartialFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{Name: "小王", Model: DefaultModel, Relay: DefaultRelay, Voice: "cedar", ProjectAliases: map[string]string{"geo": "国内 SoaRank"}}
+	want := Config{Name: "小王", Provider: DefaultProvider, Relay: DefaultRelay, Voice: "cedar", ProjectAliases: map[string]string{"geo": "国内 SoaRank"}}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got %+v want %+v", c, want)
 	}
@@ -75,17 +75,22 @@ func (f *fakeSecurity) kc() Keychain {
 
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 
-func TestOpenAIKeyEnvFirst(t *testing.T) {
+func TestProviderKeyEnvFirst(t *testing.T) {
 	f := &fakeSecurity{out: "key-from-keychain\n"}
-	key, src, err := OpenAIKey(env(map[string]string{"OPENAI_API_KEY": "key-from-env"}), f.kc())
+	key, src, err := ProviderKey(env(map[string]string{"OPENAI_API_KEY": "key-from-env"}), f.kc(), "openai")
 	if err != nil || key != "key-from-env" || src != "env" || len(f.calls) != 0 {
 		t.Fatalf("key=%q src=%q err=%v calls=%v", key, src, err, f.calls)
 	}
+	// another provider's env name; OPENAI_API_KEY must not leak into it
+	key, src, _ = ProviderKey(env(map[string]string{"OPENAI_API_KEY": "o", "DASHSCOPE_API_KEY": "q"}), f.kc(), "qwen")
+	if key != "q" || src != "env" {
+		t.Fatalf("qwen key=%q src=%q", key, src)
+	}
 }
 
-func TestOpenAIKeyFromKeychain(t *testing.T) {
+func TestProviderKeyFromKeychain(t *testing.T) {
 	f := &fakeSecurity{out: "key-from-keychain\n"}
-	key, src, err := OpenAIKey(env(nil), f.kc())
+	key, src, err := ProviderKey(env(nil), f.kc(), "openai")
 	if err != nil || key != "key-from-keychain" || src != "keychain" {
 		t.Fatalf("key=%q src=%q err=%v", key, src, err)
 	}
@@ -94,16 +99,16 @@ func TestOpenAIKeyFromKeychain(t *testing.T) {
 	}
 }
 
-func TestOpenAIKeyMissingPointsToSetup(t *testing.T) {
+func TestProviderKeyMissingPointsToSetup(t *testing.T) {
 	f := &fakeSecurity{err: ErrNotFound}
-	if _, _, err := OpenAIKey(env(nil), f.kc()); err == nil || !strings.Contains(err.Error(), "setup") {
+	if _, _, err := ProviderKey(env(nil), f.kc(), "openai"); err == nil || !strings.Contains(err.Error(), "setup") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
-func TestOpenAIKeyKeychainErrorNotHidden(t *testing.T) {
+func TestProviderKeyKeychainErrorNotHidden(t *testing.T) {
 	f := &fakeSecurity{err: errors.New("security find-generic-password: User interaction is not allowed")}
-	if _, _, err := OpenAIKey(env(nil), f.kc()); err == nil || !strings.Contains(err.Error(), "User interaction") {
+	if _, _, err := ProviderKey(env(nil), f.kc(), "openai"); err == nil || !strings.Contains(err.Error(), "User interaction") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -128,8 +133,11 @@ func TestKeychainReal(t *testing.T) {
 	if os.Getenv("REX_VOICE_KEYCHAIN_TEST") == "" {
 		t.Skip("set REX_VOICE_KEYCHAIN_TEST=1")
 	}
-	k := OpenAIKeychain()
+	k := ProviderKeychain("qwen")
 	k.Service = "rex-voice-unittest"
+	if k.Account != "qwen" {
+		t.Fatalf("account = %q", k.Account)
+	}
 	t.Cleanup(func() { k.Delete() })
 	if _, err := k.Get(); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("before Set: %v", err)

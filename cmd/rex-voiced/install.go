@@ -55,7 +55,7 @@ func plist(exe, home, rexDir, configDir string) []byte {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Written by rex-voiced install. The OpenAI key is read from the Keychain at start, never stored here. -->
+<!-- Written by rex-voiced install. Provider keys come from the phone or the Keychain, never stored here. -->
 <plist version="1.0"><dict>
 `)
 	fmt.Fprintf(&b, "  <key>Label</key><string>%s</string>\n", launchLabel)
@@ -96,10 +96,14 @@ func install(args []string) int {
 		fmt.Fprintln(os.Stderr, "还没配对：先运行 rex-voiced pair")
 		return 2
 	}
-	// launchd gets no OPENAI_API_KEY, so the service can only use the Keychain.
-	if _, err := config.OpenAIKeychain().Get(); err != nil {
-		fmt.Fprintf(os.Stderr, "钥匙串里没有可用的 OpenAI key（%v）：先运行 rex-voiced setup\n", err)
-		return 2
+	c, err := config.Load(dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	// launchd gets no env keys, so the service's only fallback is the Keychain; the phone can bring its own.
+	if _, err := config.ProviderKeychain(c.Provider).Get(); err != nil {
+		fmt.Fprintf(os.Stderr, "提醒：钥匙串里没有 %s key（%v），通话要靠手机设置里填的 key；要 Mac 兜底就运行 rex-voiced setup -provider %s\n", c.Provider, err, c.Provider)
 	}
 	if *relay != "" {
 		if err := saveRelay(dir, *relay); err != nil {
@@ -161,6 +165,6 @@ func uninstall(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	fmt.Printf("已停掉并删除 %s。配置和配对还在 %s；钥匙串里的 key 要删就运行 security delete-generic-password -s rex-voice -a openai\n", launchLabel, dir)
+	fmt.Printf("已停掉并删除 %s。配置和配对还在 %s；钥匙串里的 key 要删就运行 security delete-generic-password -s rex-voice -a <openai|qwen|doubao>\n", launchLabel, dir)
 	return 0
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"golang.org/x/net/websocket"
 
 	"github.com/yang1997434/rex-voice/internal/tools"
+	"github.com/yang1997434/rex-voice/internal/voice"
 )
 
 // fake is a scripted OpenAI Realtime server: it records every client event and lets the test push server events.
@@ -56,13 +58,23 @@ func newFake(t *testing.T, ready bool) *fake {
 
 func (f *fake) url() string { return "ws" + strings.TrimPrefix(f.srv.URL, "http") }
 
-func (f *fake) dial(t *testing.T, cfg Config) *Session {
+// withURL points cfg at the fake, keeping other Extra entries.
+func (f *fake) withURL(cfg voice.Config) voice.Config {
+	extra := map[string]string{"url": f.url()}
+	for k, v := range cfg.Extra {
+		extra[k] = v
+	}
+	cfg.Extra, cfg.Key = extra, "test-key"
+	return cfg
+}
+
+func (f *fake) dial(t *testing.T, cfg voice.Config) *Session {
 	t.Helper()
-	cfg.URL, cfg.Key = f.url(), "test-key"
+	cfg = f.withURL(cfg)
 	if cfg.Model == "" {
 		cfg.Model = "gpt-realtime-2.1"
 	}
-	s, err := Dial(context.Background(), cfg)
+	s, err := dial(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,9 +114,10 @@ func (f *fake) quiet(t *testing.T) {
 	}
 }
 
-func sessionOf(t *testing.T, f *fake, cfg Config) map[string]any {
+func sessionOf(t *testing.T, f *fake, cfg voice.Config) map[string]any {
 	t.Helper()
-	cfg.URL, cfg.Key, cfg.Model = f.url(), "test-key", "gpt-realtime-2.1"
+	cfg = f.withURL(cfg)
+	cfg.Model = "gpt-realtime-2.1"
 	s, err := Dial(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +141,7 @@ func js(v any) string { b, _ := json.Marshal(v); return string(b) }
 var testTools = []tools.ToolDef{{Type: "function", Name: "list_panes", Description: "d", Parameters: json.RawMessage(`{"type":"object"}`)}}
 
 func TestSessionUpdateTextOnly(t *testing.T) {
-	sess := sessionOf(t, newFake(t, true), Config{TextOnly: true, Instructions: "hi", Tools: testTools})
+	sess := sessionOf(t, newFake(t, true), voice.Config{TextOnly: true, Instructions: "hi", Tools: testTools})
 	if sess["type"] != "realtime" || sess["instructions"] != "hi" || sess["tool_choice"] != "auto" {
 		t.Errorf("session = %s", js(sess))
 	}
@@ -144,7 +157,7 @@ func TestSessionUpdateTextOnly(t *testing.T) {
 }
 
 func TestSessionUpdateVoice(t *testing.T) {
-	sess := sessionOf(t, newFake(t, true), Config{Transcribe: true})
+	sess := sessionOf(t, newFake(t, true), voice.Config{Transcribe: true})
 	if _, ok := sess["output_modalities"]; ok {
 		t.Errorf("voice session sets output_modalities: %s", js(sess))
 	}
@@ -161,7 +174,7 @@ func TestDialReadyTimeout(t *testing.T) {
 	readyTimeout = 200 * time.Millisecond
 	defer func() { readyTimeout = old }()
 	f := newFake(t, false)
-	_, err := Dial(context.Background(), Config{URL: f.url(), Key: "k", Model: "m"})
+	_, err := Dial(context.Background(), voice.Config{Key: "k", Model: "m", Extra: map[string]string{"url": f.url()}})
 	if err == nil || !strings.Contains(err.Error(), "session.updated") {
 		t.Fatalf("err = %v", err)
 	}
@@ -186,7 +199,7 @@ func TestToolBatchOneCreate(t *testing.T) {
 		both.Wait() // only returns if both calls run at the same time
 		return `{"tool":"` + name + `"}`
 	}
-	f.dial(t, Config{TextOnly: true, Call: call})
+	f.dial(t, voice.Config{TextOnly: true, Call: call})
 	pushLines(t, f, twoCalls)
 	outs := map[string]string{}
 	for range 2 {
@@ -213,7 +226,7 @@ func TestToolTimeout(t *testing.T) {
 	f := newFake(t, true)
 	block := make(chan struct{})
 	defer close(block)
-	f.dial(t, Config{TextOnly: true, Call: func(ctx context.Context, _, _ string) string { <-block; return "late" }})
+	f.dial(t, voice.Config{TextOnly: true, Call: func(ctx context.Context, _, _ string) string { <-block; return "late" }})
 	f.push(t, `{"type":"response.output_item.done","response_id":"r1","item":{"id":"fc1","type":"function_call","call_id":"c1","name":"a","arguments":"{}"}}`)
 	f.push(t, `{"type":"response.done","response":{"id":"r1"}}`)
 	ev := f.next(t)
@@ -227,7 +240,7 @@ func TestToolTimeout(t *testing.T) {
 
 func runRound(t *testing.T, keep bool) (*fake, []string) {
 	f := newFake(t, true)
-	f.dial(t, Config{TextOnly: true, KeepToolOutputs: keep, Call: func(context.Context, string, string) string { return "{}" }})
+	f.dial(t, voice.Config{TextOnly: true, Extra: map[string]string{"keep_tool_outputs": strconv.FormatBool(keep)}, Call: func(context.Context, string, string) string { return "{}" }})
 	pushLines(t, f, twoCalls)
 	var outIDs []string
 	for range 2 {
@@ -272,7 +285,7 @@ func TestSpeechStartedAndErrors(t *testing.T) {
 	f := newFake(t, true)
 	speech := make(chan struct{}, 1)
 	errs := make(chan error, 3)
-	s := f.dial(t, Config{Handlers: Handlers{SpeechStarted: func() { speech <- struct{}{} }, Error: func(e error) { errs <- e }}})
+	s := f.dial(t, voice.Config{Handlers: voice.Handlers{SpeechStarted: func() { speech <- struct{}{} }, Error: func(e error) { errs <- e }}})
 	f.push(t, `{"type":"input_audio_buffer.speech_started"}`)
 	f.push(t, `{"type":"error","error":{"code":"conversation_already_has_active_response","message":"busy"}}`)
 	f.push(t, `{"type":"error","error":{"code":"x","message":"gone","event_id":"rv_del_3"}}`)
@@ -300,18 +313,18 @@ func TestSpeechStartedAndErrors(t *testing.T) {
 func TestUsage(t *testing.T) {
 	f := newFake(t, true)
 	var log bytes.Buffer
-	got := make(chan Usage, 1)
-	f.dial(t, Config{TextOnly: true, UsageLog: &log, Handlers: Handlers{ResponseDone: func(u Usage) { got <- u }}})
+	got := make(chan voice.Usage, 1)
+	f.dial(t, voice.Config{TextOnly: true, UsageLog: &log, Handlers: voice.Handlers{ResponseDone: func(u voice.Usage) { got <- u }}})
 	f.push(t, `{"type":"response.done","response":{"id":"r1","usage":{"input_tokens":1000,"output_tokens":200,`+
 		`"input_token_details":{"cached_tokens":400,"text_tokens":1000,"audio_tokens":0,"cached_tokens_details":{"text_tokens":400,"audio_tokens":0}},`+
 		`"output_token_details":{"text_tokens":200,"audio_tokens":0}}}}`)
-	var u Usage
+	var u voice.Usage
 	select {
 	case u = <-got:
 	case <-time.After(3 * time.Second):
 		t.Fatal("ResponseDone not called")
 	}
-	want := Usage{Input: 1000, Cached: 400, TextIn: 1000, Output: 200, TextOut: 200, Model: "gpt-realtime-2.1", USD: u.USD}
+	want := voice.Usage{Input: 1000, Cached: 400, TextIn: 1000, Output: 200, TextOut: 200, USD: u.USD}
 	if u != want {
 		t.Errorf("usage = %+v", u)
 	}
@@ -337,7 +350,7 @@ func TestPingAfterQuietSpell(t *testing.T) {
 	t.Cleanup(func() { writeTimeout = old })
 	f := newFake(t, true)
 	errs := make(chan error, 1)
-	s := f.dial(t, Config{Handlers: Handlers{Error: func(e error) { errs <- e }}})
+	s := f.dial(t, voice.Config{Handlers: voice.Handlers{Error: func(e error) { errs <- e }}})
 	if err := s.AppendAudio([]byte{0, 0}); err != nil {
 		t.Fatal(err)
 	}

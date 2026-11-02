@@ -40,11 +40,11 @@
 
 ## 4. Mac ⇄ 实时语音提供方
 
-Mac 侧把提供方抽成一个接口（`internal/voice`，待做）：`Dial(ctx, Config{Provider, Model, Voice, Key, Instructions, Tools, Handlers…}) (Session, error)`，`Session` 有 `AppendAudio / SendText / Cancel / Close / Done / Age / RecentTurns`，Handlers 事件集就是下面 OpenAI 一节用到的那几个（音频增量、文字增量、用户 / 助手转写、说话开始、一轮结束、错误、工具调用）。会话层（`internal/call`）只认这个接口，`provider` 从 `call.start` 或 `config.json` 来。音频统一走 PCM16 24 kHz；提供方要别的采样率就在提供方内部重采样，手机和会话层不知道。已定要接：OpenAI Realtime（现有）、阿里 Qwen-Omni Realtime、字节豆包 Realtime（协议细节等调研回来补成 §4.2 / §4.3）。
+Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.Dial(ctx, voice.Config{Provider, Model, Voice, Key, Instructions, Tools, Call, TextOnly, Transcribe, Logger, Handlers, UsageLog, Version, Extra}) (voice.Session, error)` 按 `Provider` 分发到各家在 `init` 里 `voice.Register` 的实现；`Model` / `Voice` 空时取 `voice.Defaults(p)`（openai `gpt-realtime-2.1` / `marin`，qwen `qwen3.8-omni-flash-realtime` / `Tina`，doubao `1.2.6.1` / `zh_female_vv_uranus_bigtts`）；不认识的 `Provider` 返回 `voice.ErrUnknownProvider`，登记了默认值但还没实现的返回「还没实现」，没 key 直接报错、不拨号；`Extra` 放各家自己的选项（openai 的 `url`、`keep_tool_outputs`）。`voice.Session` 有 `AppendAudio / SendText / Cancel / SetMuted / Close / Done / Age / MaxAge / RecentTurns`；`voice.Handlers` 是 `AudioDelta(pcm) / TextDelta / AssistantText / UserText / SpeechStarted / ResponseDone(voice.Usage) / TurnDone / Error`；工具调用不走事件，提供方内部调 `Config.Call(ctx, name, args)` 拿结果。各家不一样的都关在提供方里：打断后截断（OpenAI 的 `truncate`）和丢掉被打断那条的迟到音频、工具事件格式、裁剪工具项。会话层（`internal/call`）只认这个接口：`provider / model / voice / api_key` 按 `call.start` > `config.json` > `voice.Defaults` 合并（`config.json` 的 `model`、`voice` 只在供应商和它的 `provider` 相同时才用），`api_key` 没带时用 Mac 钥匙串里该家的兜底 key（服务 `rex-voice`、账户 = 供应商名）；手机停发真实帧 ≥ 200 ms 时调 `SetMuted(true)`、再来真实帧调 `SetMuted(false)`（豆包要发 `input_audio_mute.commit`，OpenAI 是空操作）；会话活到 `MaxAge()` 前 5 分钟时轮换（0 = 不轮换）。音频统一走 PCM16 24 kHz；提供方要别的采样率就在提供方内部重采样（`voice.Down24to16`：24k→16k，先低通再抽取），手机和会话层不知道。已定要接：OpenAI Realtime（现有，`internal/voice/openai`）、阿里 Qwen-Omni Realtime、字节豆包 Realtime（协议细节等调研回来补成 §4.2 / §4.3）。
 
 ### 4.1 OpenAI Realtime（WebSocket）
 
-- `wss://api.openai.com/v1/realtime?model=<model>`，头 `Authorization: Bearer <key>`、`User-Agent: rex-voiced/<version>`。连上先发 `session.update`，等到 `session.updated` 才算接通（10 秒没等到报错）。实现在 `internal/openai`。
+- `wss://api.openai.com/v1/realtime?model=<model>`，头 `Authorization: Bearer <key>`、`User-Agent: rex-voiced/<version>`。连上先发 `session.update`，等到 `session.updated` 才算接通（10 秒没等到报错）。实现在 `internal/voice/openai`。
 - `session.update`：`type: realtime`、`instructions`、`tools`、`tool_choice: auto`（没有工具时两项都不发），再按模式二选一：
   - 语音：`audio.input.format {type:"audio/pcm", rate:24000}`（只支持 24k）、`audio.input.turn_detection {type:"semantic_vad", interrupt_response:true}`、`audio.input.noise_reduction {type:"near_field"}`、开转写时加 `audio.input.transcription {model:"gpt-4o-mini-transcribe", language:"zh"}`、`audio.output.voice`（默认 `"marin"`；输出格式不设，用默认 PCM16 24k）。
   - 文字（`rex-voiced chat`）：`output_modalities: ["text"]`，不带 `audio` 块。
@@ -52,7 +52,7 @@ Mac 侧把提供方抽成一个接口（`internal/voice`，待做）：`Dial(ctx
 - 打断：收到 `input_audio_buffer.speech_started` → 给手机发 `interrupt`，并发 `conversation.item.truncate {item_id, content_index:0, audio_end_ms}`（WebSocket 模式服务端不会自动截断，`audio_end_ms` = 已经送给手机播放的毫秒数减去手机侧缓冲，先按已发送量算）。
 - 工具：`response.output_item.done` 里 `item.type == "function_call"`（带 `id`、`call_id`、`name`、`arguments`），按 `response_id` 攒到这轮的 `response.done`，然后并行执行（每个 20 秒超时，超时的 output 是 `{"error":"工具超时"}`，照样送回），全部 `conversation.item.create {type:"function_call_output", id, call_id, output}` 送完再发**一次** `response.create`。用户插话导致的 `conversation_already_has_active_response` 是良性的，只记 debug。
 - 省钱：一个 `response.done` 里没有工具调用、也没有工具批次还在跑，就算答完；这时把这条回答链上所有 `function_call` 和 `function_call_output` 条目用 `conversation.item.delete {item_id}` 删掉（服务端回 `conversation.item.deleted`，11-01 真跑确认）。`function_call` 的 id 取 `response.output_item.done` 的 `item.id`；`function_call_output` 的 id 由 Mac 自己在 create 时指定（`rv_out_<n>`），不靠回包——GA 版服务端回的是 `conversation.item.added` / `conversation.item.done`，没有 `conversation.item.created`。delete 带 `event_id: rv_del_<n>`，回来的 `error` 若 `event_id` 是这个前缀就忽略（删不存在的 item）。`KeepToolOutputs` 可关掉裁剪做 A/B。副作用（11-01 实测）：删掉后模型下一问要重新调 `list_panes`。会话上限 60 分钟，55 分钟时新建会话并把最近 5 轮文字当 `instructions` 附带过去（`Session.Age()` / `RecentTurns(n)`，由会话层做）。
-- 用量：每个 `response.done` 的 `usage`（`input_tokens`、`output_tokens`、`input_token_details.{cached_tokens,audio_tokens,text_tokens,cached_tokens_details}`、`output_token_details.{audio_tokens,text_tokens}`）按 `internal/openai/prices.go` 的单价折算（cached 按输入价的 1/10），一行 JSON `{time, model, input, cached, cached_audio, audio_in, text_in, output, audio_out, text_out, usd}` 写进 `~/Library/Logs/rex-voice/usage.log`；不在单价表里的模型 `usd:0` 并带 `unpriced:true`。
+- 用量：每个 `response.done` 的 `usage`（`input_tokens`、`output_tokens`、`input_token_details.{cached_tokens,audio_tokens,text_tokens,cached_tokens_details}`、`output_token_details.{audio_tokens,text_tokens}`）按 `internal/voice/openai/prices.go` 的单价折算（cached 按输入价的 1/10），一行 JSON `{time, model, input, cached, cached_audio, audio_in, text_in, output, audio_out, text_out, usd}` 写进 `~/Library/Logs/rex-voice/usage.log`；不在单价表里的模型 `usd:0` 并带 `unpriced:true`。
 
 ## 5. 工具（移植自 `~/data/claude/voice-probe/tools.mjs`，已在实验里验证）
 
@@ -67,7 +67,7 @@ Mac 侧把提供方抽成一个接口（`internal/voice`，待做）：`Dial(ctx
 
 出错一律返回 `{"error":"…"}`（不超过 300 字），不让会话层报错：未知工具、参数不是 JSON 对象或带未定义字段、外部命令失败（取它 stderr）、工具内部 panic 都走这条，模型能看到原因。
 
-提示词（实验版，继续打磨）：中文、口语、像电话汇报；要调工具先说「我看一下」；问项目时把属于它的窗格全看一遍；Claude 原话用 `read_claude`，屏幕现状才用 `read_pane`；只讲结论和卡点，不念日志；附 `config.json` 里 `name`（称呼）和 `project_aliases`（项目说明），以及每次 `call.start` 和会话轮换时现生成的标签表（在跑的 Claude 目录名 + Rex 会话名），见 `internal/openai/prompt.go` `Build`。
+提示词（实验版，继续打磨）：中文、口语、像电话汇报；要调工具先说「我看一下」；问项目时把属于它的窗格全看一遍；Claude 原话用 `read_claude`，屏幕现状才用 `read_pane`；只讲结论和卡点，不念日志；附 `config.json` 里 `name`（称呼）和 `project_aliases`（项目说明），以及每次 `call.start` 和会话轮换时现生成的标签表（在跑的 Claude 目录名 + Rex 会话名），见 `internal/voice/prompt.go` `Build`。
 
 ## 6. 静音与挂断
 

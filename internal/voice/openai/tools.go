@@ -78,7 +78,7 @@ func (s *Session) callTool(c funcCall) string {
 func (s *Session) prune() {
 	ids := s.toolItems
 	s.toolItems = nil
-	if s.cfg.KeepToolOutputs {
+	if s.keep {
 		return
 	}
 	for _, id := range ids {

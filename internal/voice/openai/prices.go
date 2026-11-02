@@ -11,7 +11,7 @@ var prices = map[string]price{
 const cachedFactor = 0.1 // cached input is billed at 1/10 of the input price
 
 // cost returns the estimated USD of one response, and false when the model has no price entry.
-func cost(u Usage) (float64, bool) {
+func cost(u usage) (float64, bool) {
 	p, ok := prices[u.Model]
 	if !ok {
 		return 0, false

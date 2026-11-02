@@ -1,6 +1,6 @@
 // Package call is the Mac-side session layer (docs/protocol.md sections 2, 3 and 6): it keeps a
 // relay connection up, does the per-connection salt handshake and the one-phone hello check, and
-// runs the voice call that bridges phone audio and an OpenAI Realtime session.
+// runs the voice call that bridges phone audio and a realtime voice provider session (internal/voice).
 package call
 
 import (
@@ -15,23 +15,29 @@ import (
 
 	"golang.org/x/net/websocket"
 
-	"github.com/yang1997434/rex-voice/internal/openai"
 	"github.com/yang1997434/rex-voice/internal/pair"
 	"github.com/yang1997434/rex-voice/internal/relay"
 	"github.com/yang1997434/rex-voice/internal/tools"
+	"github.com/yang1997434/rex-voice/internal/voice"
 )
 
 type Config struct {
 	Pairing     *pair.Pairing
 	PairingPath string // where Pairing is saved when the first hello records its device_id
 	RelayURL    string // e.g. wss://r.maruiao.top/_voice/ws
-	OpenAI      openai.Config
-	Tools       *tools.Registry // Run registers hang_up into it; must not already contain one. Unused with Echo.
-	Echo        bool            // no OpenAI: echo phone audio back after 1 s (iOS bring-up)
-	Logger      *slog.Logger
-	Version     string
+	// Voice is config.json's provider, model and voice (empty Provider = openai); call.start's
+	// provider / model / voice / api_key override them for one call. Model, Voice and Key only
+	// apply while the call uses Voice.Provider.
+	Voice voice.Config
+	// Key, if set, is the fallback key of a provider when call.start brings none (the Keychain).
+	// Called off the Run goroutine; its result is never logged.
+	Key     func(p voice.Provider) string
+	Tools   *tools.Registry // Run registers hang_up into it; must not already contain one. Unused with Echo.
+	Echo    bool            // no provider: echo phone audio back after 1 s (iOS bring-up)
+	Logger  *slog.Logger
+	Version string
 
-	// Instructions, if set, replaces OpenAI.Instructions and is called off the Run goroutine at every
+	// Instructions, if set, replaces Voice.Instructions and is called off the Run goroutine at every
 	// call.start and session rotation, so the prompt sees what is running now.
 	Instructions func() string
 }
@@ -42,7 +48,7 @@ var (
 	keepaliveEvery = 30 * time.Second
 	idlePrompt     = 60 * time.Second
 	idleHangup     = 90 * time.Second
-	rotateAfter    = 55 * time.Minute
+	rotateMargin   = 5 * time.Minute // rotate this long before the provider's MaxAge
 	echoDelay      = time.Second
 	echoReport     = 5 * time.Second
 	backoffMin     = time.Second
@@ -93,9 +99,12 @@ func Run(ctx context.Context, cfg Config) error {
 				s.endCall("user")
 			})
 		}))
-		s.cfg.OpenAI.Tools = cfg.Tools.Defs()
-		s.cfg.OpenAI.Call = s.callTool
-		s.cfg.OpenAI.Version = cfg.Version
+		s.cfg.Voice.Tools = cfg.Tools.Defs()
+		s.cfg.Voice.Call = s.callTool
+		s.cfg.Voice.Version = cfg.Version
+		if s.cfg.Voice.Provider == "" {
+			s.cfg.Voice.Provider = voice.OpenAI
+		}
 	}
 
 	dialDone := make(chan struct{})
@@ -322,6 +331,7 @@ func (s *server) onControl(plain []byte) {
 		App      string `json:"app"`
 		Device   string `json:"device"`
 		DeviceID string `json:"device_id"`
+		startReq
 	}
 	if err := json.Unmarshal(plain, &m); err != nil {
 		s.log.Warn("bad control frame", "err", err)
@@ -337,7 +347,7 @@ func (s *server) onControl(plain []byte) {
 	}
 	switch m.T {
 	case "call.start":
-		s.startCall()
+		s.startCall(m.startReq)
 	case "call.end":
 		s.endCall("user")
 	default:

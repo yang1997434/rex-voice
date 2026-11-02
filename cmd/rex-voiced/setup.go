@@ -15,12 +15,19 @@ import (
 	"github.com/yang1997434/rex-voice/internal/config"
 )
 
-// setup stores the OpenAI key in the Keychain and the user's name in config.json.
-// Interactive on a terminal; otherwise it reads env OPENAI_API_KEY and REX_VOICE_NAME.
+// setup stores one provider's fallback key in the Keychain and the user's name in config.json.
+// Interactive on a terminal; otherwise it reads the provider's env key (config.KeyEnv) and REX_VOICE_NAME.
+// The key may be left out: the phone can send its own with call.start.
 func setup(args []string) int {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	dirFlag := configDirFlag(fs)
+	provider := fs.String("provider", config.DefaultProvider, "whose API key to store: openai | qwen | doubao")
 	fs.Parse(args)
+	keyEnv := config.KeyEnv(*provider)
+	if keyEnv == "" {
+		fmt.Fprintln(os.Stderr, "不支持的供应商：", *provider)
+		return 2
+	}
 
 	dir, err := config.Dir(*dirFlag)
 	if err != nil {
@@ -32,7 +39,7 @@ func setup(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	kc := config.OpenAIKeychain()
+	kc := config.ProviderKeychain(*provider)
 	_, kerr := kc.Get()
 	haveKey := kerr == nil
 	if kerr != nil && !errors.Is(kerr, config.ErrNotFound) {
@@ -48,7 +55,7 @@ func setup(args []string) int {
 		if haveKey {
 			hint = "（钥匙串里已有，直接回车保留）"
 		}
-		fmt.Print("OpenAI API key", hint, "：")
+		fmt.Print(*provider, " API key（可留空，在手机设置里填）", hint, "：")
 		b, err := term.ReadPassword(int(os.Stdin.Fd()))
 		fmt.Println()
 		if err != nil {
@@ -57,7 +64,7 @@ func setup(args []string) int {
 		}
 		key = strings.TrimSpace(string(b))
 	} else {
-		key = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+		key = strings.TrimSpace(os.Getenv(keyEnv))
 	}
 	switch {
 	case key != "":
@@ -65,10 +72,9 @@ func setup(args []string) int {
 			fmt.Fprintln(os.Stderr, "存钥匙串失败：", err)
 			return 1
 		}
-		fmt.Println("OpenAI key 已存进钥匙串（服务 rex-voice，账户 openai）。")
+		fmt.Printf("%s key 已存进钥匙串（服务 rex-voice，账户 %s）。\n", *provider, *provider)
 	case !haveKey:
-		fmt.Fprintln(os.Stderr, "没有拿到 OpenAI key：在终端里运行 rex-voiced setup 手动输入，或设 env OPENAI_API_KEY。")
-		return 1
+		fmt.Printf("没存 %s key：通话要靠手机设置里填的 key；要 Mac 兜底就在终端里重跑 rex-voiced setup -provider %s，或设 env %s。\n", *provider, *provider, keyEnv)
 	}
 
 	name := c.Name

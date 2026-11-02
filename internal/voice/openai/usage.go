@@ -3,9 +3,12 @@ package openai
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/yang1997434/rex-voice/internal/voice"
 )
 
-type Usage struct {
+// usage is one response's tokens; it keeps CachedAudio and Model for prices.go and the log line.
+type usage struct {
 	Input, Cached, AudioIn, TextIn, Output, AudioOut, TextOut int
 	CachedAudio                                               int // part of Cached that is audio
 	Model                                                     string
@@ -30,9 +33,15 @@ type rawUsage struct {
 	} `json:"output_token_details"`
 }
 
-func (r rawUsage) toUsage(model string) Usage {
+func (u usage) public() voice.Usage {
+	_, priced := prices[u.Model]
+	return voice.Usage{Input: u.Input, Cached: u.Cached, AudioIn: u.AudioIn, TextIn: u.TextIn,
+		Output: u.Output, AudioOut: u.AudioOut, TextOut: u.TextOut, USD: u.USD, Unpriced: !priced}
+}
+
+func (r rawUsage) toUsage(model string) usage {
 	d := r.InputDetails
-	u := Usage{Input: r.InputTokens, Cached: d.Cached, AudioIn: d.Audio, TextIn: d.Text,
+	u := usage{Input: r.InputTokens, Cached: d.Cached, AudioIn: d.Audio, TextIn: d.Text,
 		Output: r.OutputTokens, AudioOut: r.OutputDetails.Audio, TextOut: r.OutputDetails.Text, Model: model}
 	switch {
 	case d.CachedDetails != nil:
@@ -59,7 +68,7 @@ type usageLine struct {
 	Unpriced    bool    `json:"unpriced,omitempty"`
 }
 
-func (s *Session) writeUsage(u Usage) {
+func (s *Session) writeUsage(u usage) {
 	if s.cfg.UsageLog == nil {
 		return
 	}

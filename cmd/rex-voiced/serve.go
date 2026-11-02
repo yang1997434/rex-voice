@@ -13,17 +13,18 @@ import (
 
 	"github.com/yang1997434/rex-voice/internal/call"
 	"github.com/yang1997434/rex-voice/internal/config"
-	"github.com/yang1997434/rex-voice/internal/openai"
 	"github.com/yang1997434/rex-voice/internal/pair"
 	"github.com/yang1997434/rex-voice/internal/tools"
+	"github.com/yang1997434/rex-voice/internal/voice"
+	_ "github.com/yang1997434/rex-voice/internal/voice/openai" // registers provider "openai"
 )
 
 func serve(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dirFlag := configDirFlag(fs)
 	relay := fs.String("relay", "", "relay WebSocket URL (default: config.json relay)")
-	model := fs.String("model", "", "OpenAI Realtime model (default: config.json model)")
-	echo := fs.Bool("echo", false, "no OpenAI: echo phone audio back after 1 s (for iOS bring-up)")
+	model := fs.String("model", "", "model of config.json's provider (default: config.json model, else the provider's default)")
+	echo := fs.Bool("echo", false, "no voice provider: echo phone audio back after 1 s (for iOS bring-up)")
 	keep := fs.Bool("keep-tool-outputs", false, "do not delete tool items after each answer (A/B)")
 	debug := fs.Bool("debug", false, "debug logging")
 	fs.Parse(args)
@@ -50,14 +51,17 @@ func serve(args []string) int {
 		return 1
 	}
 	log := logger(*debug)
-	var key string
+	if m, _ := voice.Defaults(voice.Provider(c.Provider)); m == "" {
+		fmt.Fprintln(os.Stderr, "config.json provider 不支持：", c.Provider)
+		return 1
+	}
 	if !*echo {
-		var src string
-		if key, src, err = config.OpenAIKey(os.Getenv, config.OpenAIKeychain()); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
+		// Only a warning: the phone may bring its own key with call.start.
+		if _, src, err := config.ProviderKey(os.Getenv, config.ProviderKeychain(c.Provider), c.Provider); err != nil {
+			log.Warn("no fallback key on this Mac, calls need the phone's key", "provider", c.Provider, "err", err)
+		} else {
+			log.Info(c.Provider + " key: " + src) // README 常见问题 points at "openai key: keychain"
 		}
-		log.Info("openai key: " + src)
 	}
 
 	audit := logFile("audit.log")
@@ -75,25 +79,41 @@ func serve(args []string) int {
 		Version:     version,
 	}
 	if !*echo {
-		cfg.Instructions = func() string { return openai.Build(c.Name, c.ProjectAliases, projectLabels()) }
-		cfg.OpenAI = openai.Config{
-			Model:           *model,
-			Key:             key,
-			Voice:           c.Voice,
-			Transcribe:      true,
-			KeepToolOutputs: *keep,
-			UsageLog:        usageLog(),
-			Logger:          cfg.Logger,
+		cfg.Instructions = func() string { return voice.Build(c.Name, c.ProjectAliases, projectLabels()) }
+		cfg.Voice = voice.Config{
+			Provider:   voice.Provider(c.Provider),
+			Model:      *model,
+			Voice:      c.Voice,
+			Transcribe: true,
+			Extra:      keepExtra(*keep),
+			UsageLog:   usageLog(),
+			Logger:     cfg.Logger,
+		}
+		// Looked up per call, so a key stored after start is picked up without a restart.
+		cfg.Key = func(p voice.Provider) string {
+			key, _, err := config.ProviderKey(os.Getenv, config.ProviderKeychain(string(p)), string(p))
+			if err != nil {
+				log.Warn("no fallback key", "provider", p, "err", err)
+			}
+			return key
 		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	cfg.Logger.Info("rex-voiced serve", "version", version, "config", dir, "relay", *relay, "echo", *echo, "model", *model)
+	cfg.Logger.Info("rex-voiced serve", "version", version, "config", dir, "relay", *relay, "echo", *echo, "provider", c.Provider, "model", *model)
 	if err := call.Run(ctx, cfg); err != nil && ctx.Err() == nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	return 0
+}
+
+// keepExtra is the openai provider's switch to keep tool items (A/B).
+func keepExtra(keep bool) map[string]string {
+	if !keep {
+		return nil
+	}
+	return map[string]string{"keep_tool_outputs": "true"}
 }
 
 // logFile opens ~/Library/Logs/rex-voice/<name> for appending, creating the directory 0700.
