@@ -1,0 +1,41 @@
+# 实时语音提供方调研（2026-11-01）
+
+给 `internal/voice` 接 阿里 Qwen-Omni Realtime 和 字节豆包 Realtime 3.0 用。两路 researcher 只读官方文档得出，标「未核实」的要在接入时拿真实返回对一遍。现有基线是 OpenAI Realtime（`docs/protocol.md` §4.1）。
+
+## 共同点（决定接口怎么设计）
+
+| 项 | OpenAI | Qwen 3.8-omni-flash-realtime | 豆包 3.0（Seeduplex，`model: "1.2.6.1"`） |
+|---|---|---|---|
+| 上行音频 | PCM16 24k | **只收 16k** PCM16（3.5 系列可 24k） | **只收 16k** PCM16（或 Opus），20ms=640B，**必须按实时节奏发** |
+| 下行音频 | PCM16 24k | PCM16 24k | 24k，**默认 ogg_opus，要显式设 `pcm_s16le`**（`pcm` 是 float32） |
+| 协议 | JSON 事件（GA 名） | JSON 事件（OpenAI **beta** 名） | JSON 事件（名字像 OpenAI，细节不同） |
+| 打断 | speech_started + cancel + truncate | speech_started + cancel，**无 truncate** | `conversation.item.input_audio_transcription.started` 当开口信号 + `response.cancel`→`response.canceled`，无 truncate |
+| 工具 | 扁平 tool 定义；`function_call_output` + `response.create` | 定义多套一层 `function:{}`（未核实）；结果同 OpenAI | `response.function_call_arguments.done` 里 `items[]` 一次多个；结果 `conversation.item.create role:"tool"` 带 `call_id`，全部回传后模型自动继续（是否还要 `response.create` 未核实） |
+| 删会话项 | 有 | **无** | 有 `conversation.item.delete`（字段未核实） |
+| 会话时长 | 60 分钟 | 120 分钟；音频保留 100 轮 / 600 秒 | 没查到；闲置 10 分钟断 |
+| 静音 | 不用管 | 不用管 | 关麦**必须**发 `input_audio_mute.commit` / `input_audio_unmute.commit`，否则超时不再回应 |
+| 关闭 | 直接断 | 直接断（5–10 秒才真关） | 先 `session.close` 等回复再断，否则 55000001 |
+
+## Qwen-Omni Realtime
+
+- 端点：`wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=…`（新）；旧 `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` 是否还能用未核实（先试旧的，不行再查 WorkspaceId）。头 `Authorization: Bearer <DASHSCOPE_API_KEY>`，key 绑地域。本机 `flow-cred QWEN_API_KEY` 是北京地域、11-01 实测能列出 `qwen3.8-omni-flash-realtime`。
+- session：无 `session.type`；`audio.input.format {type:"pcm", sample_rate:16000}`；`audio.output.voice`（默认 `Tina`）；`turn_detection {type: server_vad|semantic_vad|semantic_vad_ec, threshold, silence_duration_ms(默认 800)}`，`interrupt_response` 默认 true；输入转写要配 `input_audio_transcription {model:"qwen3-asr-flash-realtime"}`（固定值）。
+- 事件名：`response.audio.delta`、`response.audio_transcript.delta/.done`、`response.text.delta/.done`、`response.function_call_arguments.delta/.done`、`conversation.item.input_audio_transcription.delta/.completed`（delta 里 `text` 已确认 + `stash` 草稿）、`input_audio_buffer.speech_started/.stopped`。`response.cancel` 在没有进行中回复时会回 error（要容忍）。
+- 没有：`conversation.item.delete/truncate`、`tool_choice`、message 类型的 `conversation.item.create`（不能塞系统 / 用户文本）→ 会话轮换时「最近 5 轮」只能塞进 instructions。
+- 工具和 `enable_search` 互斥。
+- 价格（北京，元/百万 token）：文本入 1.5、音频入 6、文本出 4.5、音频出 12，100 万 token 免费额度（90 天）。音频入每秒 7 token、出每秒 12.5 token；音频和文本输出分开计费。
+- 音色：Tina（默认）、Liora Mira、Raymond、Ryan、Mia、Serena、Evan、Momo…；3.8 独有 Zane / Cici；方言若干。
+- 出处：https://www.alibabacloud.com/help/zh/model-studio/realtime 、/client-events 、/server-events 、/omni-realtime-interaction-process 、https://help.aliyun.com/zh/model-studio/model-pricing 、/omni-voice-list
+
+## 豆包 Realtime 3.0（Seeduplex）
+
+- 产品在「豆包语音」（不是方舟），控制台「API Key 管理」拿 key；头 `X-Api-Key`（旧四头鉴权也支持但要下线）。**2026-06 发布稿说「邀测」，现在是否开放未核实**——要用户在 https://console.volcengine.com 的豆包语音里开通并给 key。本机只有 `VOLC_ASR_*` / `VOLC_TTS_*`，不是这个。
+- 端点：`wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue`（带 `/duplex/` 的才是 3.0；没有的是老二进制协议，不接）。
+- 流程：`session.create {model:"1.2.6.1", instructions, tools, audio:{output:{format:{type:"pcm_s16le", rate:24000}, voice}}}` → `session.created`（带 `session.id`）；`session.update` 是全量覆盖；`input_audio_buffer.append`（base64 PCM16 16k）；关麦 `input_audio_mute.commit`；结束 `session.close`。
+- 下行：`conversation.item.input_audio_transcription.started/delta/completed/failed`、`response.output_text.delta/done`、`response.output_audio.started/delta/done`、`response.function_call_arguments.done {items:[{call_id,name,arguments}]}`、`response.canceled`、`response.done`（用量，字段未核实）、`error`。字段名官方页没全给，**以官方 demo 为准**（文档要登录才看全）。
+- 上下文 64K tokens；注入历史必须 user/assistant 成对、≤20 轮；`session.update` 回传 `session.id` 可续接最近 20 轮。
+- 限流：QPM 60、TPM 10 万。5xx 重连、4xx 不重试。
+- 价格（元/百万 token，是否覆盖 3.0 未写）：音频入 80、文本入 10、缓存 5、音频出 300、文本出 80。音频入每秒 6.25 token、出每秒 25 token。
+- 音色：`zh_female_vv_uranus_bigtts`（Vivi 2.0）、`zh_female_xiaohe_uranus_bigtts`、`zh_male_m191_uranus_bigtts`（云舟）、`zh_male_taocheng_uranus_bigtts`（小天）；文档例子又用 `_jupiter_` 后缀，3.0 该用哪个未核实（错了报 `InvalidSpeaker`）。
+- 已知坑：模型可能把工具名念出来（instructions 压住）；`session.create` 可能拒收不认识的 JSON Schema 关键字；默认严格审核。
+- 出处：https://docs.volcengine.com/docs/DoubaoVoice/endtoend-realtime-voice-full-duplex-version?lang=zh 、https://docs.volcengine.com/docs/doubao-voice/access-must-read?lang=zh 、/billing-instructions 、/tone-list-3 ；第三方 https://github.com/kikilomas95-create/seeduplex-web-demo 、https://github.com/SpaceEggs/agentic-call-control/issues/2
