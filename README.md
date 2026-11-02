@@ -10,11 +10,11 @@ Mac 上跑的是后台服务 `rex-voiced`。手机和 Mac 之间经一台中继�
 - 装好 Rex，并且打开过一次（`rex-voiced` 要用它的 `rex` 命令）
 - Claude Code（`claude`），在 Rex 的窗格里跑
 - 一个 OpenAI API key，账户要能用 Realtime 模型（默认 `gpt-realtime-2.1`），按用量付费
-- 一台 iPhone，装 RexVoice app（TestFlight 内测，找发给你压缩包的人要邀请）
+- 一台 iPhone，装 RexVoice app（TestFlight 内测，找项目维护者要邀请）
 
 ## 安装（四步）
 
-1. **装程序**：解压收到的 `rex-voiced-<版本>-macos.tar.gz`，进目录运行
+1. **装程序**：到 https://github.com/yang1997434/rex-voice/releases 下载最新的 `rex-voiced-<版本>-macos.tar.gz`，解压进目录运行
 
    ```sh
    tar xzf rex-voiced-*-macos.tar.gz
