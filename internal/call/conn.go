@@ -45,6 +45,9 @@ var (
 	backoffMax     = 30 * time.Second
 	writeTimeout   = 10 * time.Second
 	dialTimeout    = 15 * time.Second
+	fillEvery      = 20 * time.Millisecond  // silence fill: check interval
+	fillAfter      = 200 * time.Millisecond // silence fill: start only after this gap, so relay jitter does not splice zeros into speech
+	fillFor        = 5 * time.Second        // silence fill: stop this long after the last real frame
 )
 
 type server struct {
@@ -108,6 +111,8 @@ func Run(ctx context.Context, cfg Config) error {
 			f()
 		case now := <-tick.C:
 			s.onTick(now)
+		case now := <-s.fillTick():
+			s.onFillTick(now)
 		}
 	}
 }

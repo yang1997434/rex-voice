@@ -24,8 +24,10 @@ type callState struct {
 	rotating  bool
 	rotateOK  time.Time // earliest next rotation attempt after a failed one
 	state     string    // last status sent: connecting | listening | thinking | speaking
-	lastAudio time.Time
+	lastAudio time.Time // last real phone frame, or call start; drives the idle prompt and hang-up
 	prompted  bool
+	lastFrame time.Time    // last real phone frame sent to the current session; zero until one is
+	fill      *time.Ticker // silence fill; nil in echo mode
 
 	item      string // assistant audio item being streamed to the phone
 	itemBytes int    // bytes of item already sent
@@ -58,6 +60,7 @@ func (s *server) startCall() {
 		return
 	}
 	s.setState(c, "connecting")
+	c.fill = time.NewTicker(fillEvery)
 	s.dialSession(c, s.cfg.OpenAI.Instructions)
 }
 
@@ -97,7 +100,7 @@ func (s *server) dialed(c *callState, sid int, sess *openai.Session, err error) 
 		return
 	}
 	old := c.sess
-	c.sess, c.sid, c.rotating = sess, sid, false
+	c.sess, c.sid, c.rotating, c.lastFrame = sess, sid, false, time.Time{}
 	if old != nil {
 		old.Close()
 		s.log.Info("openai session rotated")
@@ -221,9 +224,34 @@ func (s *server) onPhoneAudio(pcm []byte) {
 		return
 	}
 	if c.sess != nil {
+		c.lastFrame = time.Now()
 		if err := c.sess.AppendAudio(pcm); err != nil {
 			s.log.Warn("append audio failed", "err", err)
 		}
+	}
+}
+
+var silenceFrame = make([]byte, frameBytes)
+
+func (s *server) fillTick() <-chan time.Time {
+	if s.call == nil || s.call.fill == nil {
+		return nil
+	}
+	return s.call.fill.C
+}
+
+// onFillTick keeps server VAD fed after the phone stops sending (it gates on energy),
+// for fillFor only so a long silence is not billed. Fill does not count as audio for the idle timers.
+func (s *server) onFillTick(now time.Time) {
+	c := s.call
+	if c.sess == nil || c.rotating || c.lastFrame.IsZero() {
+		return
+	}
+	if gap := now.Sub(c.lastFrame); gap < fillAfter || gap > fillFor {
+		return
+	}
+	if err := c.sess.AppendAudio(silenceFrame); err != nil {
+		s.log.Warn("append silence failed", "err", err)
 	}
 }
 
@@ -282,6 +310,9 @@ func (s *server) endCall(reason string) {
 		return
 	}
 	s.call = nil
+	if c.fill != nil {
+		c.fill.Stop()
+	}
 	if c.sess != nil {
 		c.sess.Close()
 	}

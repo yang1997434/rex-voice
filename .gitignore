@@ -11,3 +11,4 @@ xcuserdata/
 .env
 .env.*
 pair-*.json
+.claude/worktrees/

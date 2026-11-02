@@ -537,6 +537,85 @@ func TestEcho(t *testing.T) {
 	}
 }
 
+// appends collects the bytes of every input_audio_buffer.append the Mac sends during d.
+func (c *aiConn) appends(t *testing.T, d time.Duration) [][]byte {
+	t.Helper()
+	var out [][]byte
+	deadline := time.After(d)
+	for {
+		select {
+		case ev := <-c.got:
+			if ev["type"] == "input_audio_buffer.append" {
+				b, _ := base64.StdEncoding.DecodeString(ev["audio"].(string))
+				out = append(out, b)
+			}
+		case <-deadline:
+			return out
+		}
+	}
+}
+
+// Protocol section 6: after the phone stops sending, the Mac feeds fillFor of zero PCM, then stops.
+func TestSilenceFillAfterPhoneStops(t *testing.T) {
+	set(t, &fillFor, 200*time.Millisecond)
+	set(t, &fillAfter, 40*time.Millisecond)
+	e := start(t, false, "")
+	ph, ai := e.inCall(t)
+	if got := ai.appends(t, 100*time.Millisecond); len(got) != 0 {
+		t.Fatalf("%d appends before the first real frame", len(got))
+	}
+	real := map[string]bool{}
+	for i := range 10 {
+		f := pattern(960, byte(i+1))
+		real[string(f)] = true
+		ph.audio(t, f)
+	}
+	got := ai.appends(t, 600*time.Millisecond)
+	var nReal, nZero int
+	for _, b := range got {
+		switch {
+		case real[string(b)]:
+			nReal++
+		case len(b) == frameBytes && bytes.Count(b, []byte{0}) == frameBytes:
+			nZero++
+		default:
+			t.Fatalf("append of %d bytes is neither a phone frame nor zero PCM", len(b))
+		}
+	}
+	// 200 ms / 20 ms = 10 fill frames; a 600 ms window without the cutoff would hold ~30.
+	if nReal != 10 || nZero < 3 || nZero > 12 {
+		t.Fatalf("real %d, zero %d", nReal, nZero)
+	}
+	if more := ai.appends(t, 300*time.Millisecond); len(more) != 0 {
+		t.Fatalf("%d appends after fillFor", len(more))
+	}
+}
+
+func TestEchoNoSilenceFill(t *testing.T) {
+	set(t, &fillFor, 200*time.Millisecond)
+	set(t, &fillAfter, 40*time.Millisecond)
+	e := start(t, true, "")
+	ph := e.ready(t)
+	ph.ctl(t, map[string]any{"t": "call.start"})
+	ph.expectStatus(t, "listening")
+	for i := range 10 {
+		ph.audio(t, pattern(960, byte(i+1)))
+	}
+	n := 0
+	// echo transcripts arrive every echoReport, so next never blocks past the deadline for long
+	for deadline := time.Now().Add(echoDelay + 400*time.Millisecond); time.Now().Before(deadline); {
+		if typ, plain := ph.next(t); typ == pair.TypeAudio {
+			if bytes.Count(plain, []byte{0}) == len(plain) {
+				t.Fatal("zero PCM echoed to the phone")
+			}
+			n++
+		}
+	}
+	if n != 10 {
+		t.Fatalf("phone got %d audio frames, want 10", n)
+	}
+}
+
 func TestKeepalive(t *testing.T) {
 	set(t, &keepaliveEvery, 50*time.Millisecond)
 	e := start(t, true, "")
