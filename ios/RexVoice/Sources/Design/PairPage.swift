@@ -8,14 +8,22 @@ struct PairPage: View {
 
     var body: some View {
         GeometryReader { geo in
+            // The page ignores the safe area so camera and frame share coordinates; the frame and the guide still keep
+            // clear of side insets (Duo outer screen's status column, landscape) and fit a short landscape height.
+            let inset = geo.safeAreaInsets
+            let side = min(250, geo.size.height * 0.45)
+            let center = CGPoint(x: inset.leading + (geo.size.width - inset.leading - inset.trailing) / 2,
+                                 y: geo.size.height * (geo.size.width > geo.size.height ? 0.3 : 0.34))
             ZStack(alignment: .bottom) {
-                camera(geo.size)
+                camera(center: center)
                 LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .center, endPoint: .bottom)
                     .allowsHitTesting(false)
                 Viewfinder()
-                    .frame(width: 250, height: 250)
-                    .position(x: geo.size.width / 2, y: geo.size.height * 0.34)
+                    .frame(width: side, height: side)
+                    .position(center)
                 guide
+                    .padding(.leading, inset.leading)
+                    .padding(.trailing, inset.trailing)
             }
         }
         .ignoresSafeArea()
@@ -43,10 +51,10 @@ struct PairPage: View {
             .padding(.bottom, 36)
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 40) // home indicator; the page ignores the safe area so camera and frame share coordinates
+        .padding(.bottom, 40) // home indicator
     }
 
-    @ViewBuilder private func camera(_ size: CGSize) -> some View {
+    @ViewBuilder private func camera(center: CGPoint) -> some View {
         #if DEBUG
         if PreviewScreen.current != nil {
             // Simulator has no camera: a dim scene with a QR code standing in for the feed.
@@ -56,7 +64,7 @@ struct PairPage: View {
                     .resizable()
                     .frame(width: 150, height: 150)
                     .foregroundStyle(.white.opacity(0.8))
-                    .position(x: size.width / 2, y: size.height * 0.34)
+                    .position(center)
             }
         } else {
             scanner

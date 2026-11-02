@@ -118,6 +118,8 @@ struct SettingsPage: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
                 .padding(.bottom, 40)
+                .frame(maxWidth: 640) // Duo unfolded / landscape: a centered column, cards not stretched
+                .frame(maxWidth: .infinity)
             }
             .scrollIndicators(.hidden)
             // Pinned bar: content scrolls under it (soft edge) instead of under the status bar.
@@ -162,6 +164,8 @@ struct SettingsPage: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 8)
+        .frame(maxWidth: 640)
+        .frame(maxWidth: .infinity)
     }
 
     private var pageBackground: some View {

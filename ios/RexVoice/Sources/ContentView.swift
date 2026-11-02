@@ -8,6 +8,7 @@ struct ContentView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.horizontalSizeClass) private var hSize
     @State private var sheet: Sheet?
     @State private var callStart: Date?
     /// Provider whose missing key is being asked about before a call.
@@ -24,17 +25,29 @@ struct ContentView: View {
         let phase = controller.phase
         let state = PersonaState(phase)
         let mood = Mood(state, dark: scheme == .dark)
-        VStack(spacing: 14) {
-            topBar
-            personaCard(phase, state: state, mood: mood)
-            statusRow(phase, mood: mood)
-            transcriptCard(phase, mood: mood)
-            Spacer(minLength: 0)
-            V2CallButton(phase: phase, enabled: controller.primaryEnabled, action: primaryAction)
-            .padding(.horizontal, 8)
+        // Laid out from the live size every pass, so Duo fold / unfold and rotation re-flow it.
+        GeometryReader { geo in
+            VStack(spacing: 14) {
+                // No status bar above us (Duo outer screen, landscape): the header keeps its own margin from the edge.
+                topBar.padding(.top, max(0, 14 - geo.safeAreaInsets.top))
+                if hSize == .regular || geo.size.width > geo.size.height {
+                    twoColumns(phase, state: state, mood: mood)
+                } else {
+                    // Full width at 0.53 of the height; on a short screen it gives way first so nothing is pushed off.
+                    personaCard(phase, state: state, mood: mood)
+                        .frame(maxHeight: geo.size.height * 0.53)
+                        .layoutPriority(1)
+                    statusRow(phase, mood: mood)
+                    transcriptCard(phase, mood: mood)
+                    Spacer(minLength: 0)
+                    callButton(phase)
+                }
+            }
+            .padding(.horizontal, 16)
             .padding(.bottom, 8)
+            .frame(maxWidth: 900)
+            .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, 16)
         .background { pageBackground }
         .animation(reduceMotion ? .easeInOut(duration: 0.3) : .smooth(duration: 0.5), value: state)
         .animation(.smooth, value: controller.notice)
@@ -67,6 +80,31 @@ struct ContentView: View {
             missingKey = settings.provider
         } else {
             Task { await controller.toggleCall() }
+        }
+    }
+
+    private func callButton(_ phase: CallPhase) -> some View {
+        V2CallButton(phase: phase, enabled: controller.primaryEnabled, action: primaryAction)
+            .padding(.horizontal, 8)
+    }
+
+    /// Regular width (Duo unfolded) or landscape: the card keeps its portrait 0.9:1 on the left, the rest stacks on
+    /// the right with the call button level with the card's bottom.
+    private func twoColumns(_ phase: CallPhase, state: PersonaState, mood: Mood) -> some View {
+        GeometryReader { row in
+            let cardWidth = min(row.size.height * 0.9, (row.size.width - 20) / 2)
+            HStack(spacing: 20) {
+                personaCard(phase, state: state, mood: mood)
+                    .frame(width: cardWidth, height: cardWidth / 0.9)
+                VStack(spacing: 14) {
+                    statusRow(phase, mood: mood)
+                    transcriptCard(phase, mood: mood)
+                    Spacer(minLength: 0)
+                    callButton(phase)
+                }
+                .frame(height: cardWidth / 0.9)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -129,7 +167,6 @@ struct ContentView: View {
                                                    startPoint: .top, endPoint: .bottom), lineWidth: 1))
         .shadow(color: mood.glow.opacity(dark ? 0.25 : 0.35), radius: 30, y: 14)
         .shadow(color: .black.opacity(dark ? 0.5 : 0.1), radius: 2, y: 1)
-        .containerRelativeFrame(.vertical) { h, _ in h * 0.53 }
     }
 
     // chips sit on the card's light: dark smoke in dark mode, milky white in light mode
@@ -165,6 +202,7 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 6)
+        .fixedSize(horizontal: false, vertical: true) // never squeezed by the card's layout priority
     }
 
     private func transcriptCard(_ phase: CallPhase, mood: Mood) -> some View {
