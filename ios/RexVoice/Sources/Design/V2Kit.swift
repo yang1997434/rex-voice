@@ -34,6 +34,7 @@ struct PersonaView: View {
                 Image(name)
                     .resizable()
                     .scaledToFit()
+                    .mask(edgeFeather) // the bust portraits are cut flat at the sides and top (user 2026-11-02: feather in app, no regen)
                     .id(name)
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)))
             }
@@ -42,6 +43,16 @@ struct PersonaView: View {
         .animation(.easeInOut(duration: 0.3), value: name)
         .accessibilityElement()
         .accessibilityLabel("Claude 形象，\(persona.name)")
+    }
+
+    /// Opaque in the middle, fading out over the outer 16% of the left, right and top edges; the bottom
+    /// stays hard because the card crops it anyway.
+    private var edgeFeather: some View {
+        let fade: [Gradient.Stop] = [.init(color: .clear, location: 0), .init(color: .black, location: 0.16),
+                                     .init(color: .black, location: 0.84), .init(color: .clear, location: 1)]
+        return LinearGradient(stops: fade, startPoint: .leading, endPoint: .trailing)
+            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.16),
+                                         .init(color: .black, location: 1)], startPoint: .top, endPoint: .bottom))
     }
 }
 

@@ -27,7 +27,7 @@
 - [ ] `report-publish` 在本机会先撞系统 openrsync（不认 --chmod）：脚本在 claude-stack 仓，建议改成 /opt/homebrew/bin/rsync，等用户点头。
 - [ ] iOS 设计稿 B、C 两版代码在定稿实现时删除，截图保留在 docs/design-specs/ios-liquid-glass/。
 - [ ] 局域网直连 + 中继兜底（用户 2026-11-01 问「别人用是不是都走我的中继」）：Mac 在 LAN 监听、二维码同时带 LAN 地址，手机先直连再回退中继；在家不经中继。要用户点头再做。
-- [ ] 新形象 6 组（gpt、grok、gemini、kimi 左右、claude-sketch 头顶）原图是裁平的半身图，主屏上露硬切线（checker 2026-11-02 核出）：重出图或 app 侧加边缘羽化，等用户在评审页选。
-- [ ] 形象资源 12 组 × 5 张 640px PNG 共 40 MB 进 app 包；TestFlight 阶段先接受，上架前考虑缩 512px 或按需下载。
+- [x] 已做（用户 2026-11-02 定 app 侧羽化不重出图：PersonaView 左右和顶部 16% 渐隐，checker 核过 kimi 右侧仅剩极淡残留）新形象 5 组原图裁平露硬切线。
+- [x] 已做（用户 2026-11-02 定：接受 40 MB、640px）形象资源进 app 包；上架前再看要不要按需下载。
 - [ ] 第三方参考图（aigengtu 三视图、ZipZipPipe 插画、moegirl 快照）只在本机 `docs/design-specs/personas/_refs/`，已 gitignore；换机器要重新按各 `source.md` 下载。
 - [ ] Qwen 国际站默认：国内网络下 audio-3.1-plus 首包延迟没量；A/B 时和 3.8（北京）对比记 docs/releases.md。
