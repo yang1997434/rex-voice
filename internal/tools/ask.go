@@ -61,6 +61,11 @@ func ParseBox(screen string) (question string, opts []string) {
 	if !ask {
 		question = ""
 	}
+	// After the last of several questions Claude Code shows a "Submit answers / Cancel" page with no question
+	// text; without a title the phone would keep the previous question's.
+	if question == "" && len(opts) > 0 && strings.HasPrefix(opts[0], "Submit") {
+		question = "提交答案？"
+	}
 	if len(opts) > maxAskOptions {
 		opts = opts[:maxAskOptions]
 	}

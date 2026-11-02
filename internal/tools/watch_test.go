@@ -259,3 +259,10 @@ func TestParseBoxNone(t *testing.T) {
 		t.Fatalf("question %q options %q, want none", q, opts)
 	}
 }
+
+func TestParseBoxSubmitPage(t *testing.T) {
+	q, opts := ParseBox("some earlier text\n\n❯ 1. Submit answers\n  2. Cancel\n")
+	if q != "提交答案？" || len(opts) != 2 || opts[0] != "Submit answers" {
+		t.Fatalf("got %q %v", q, opts)
+	}
+}
