@@ -827,6 +827,27 @@ func TestCallStartAPIKeyOverridesConfig(t *testing.T) {
 	}
 }
 
+// The relay invite code never reaches the log: a refused dial (403, the error carries the full URL)
+// shows invite=***, and the connected line shows the relay address without its query.
+func TestInviteNotLogged(t *testing.T) {
+	for _, tc := range []struct{ invite, want string }{{"wrongcode9", "invite=***"}, {"goodcode1", "connected relay"}} {
+		logs := &syncBuf{}
+		h := relay.NewHub()
+		h.Invites = []string{"goodcode1"}
+		startWith(t, true, "", h, func(c *Config) {
+			c.Invite = tc.invite
+			c.Logger = slog.New(slog.NewTextHandler(logs, nil))
+		})
+		deadline := time.Now().Add(wait)
+		for !strings.Contains(logs.String(), tc.want) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if got := logs.String(); !strings.Contains(got, tc.want) || strings.Contains(got, tc.invite) {
+			t.Fatalf("invite %s: log has no %q or leaks the code:\n%s", tc.invite, tc.want, got)
+		}
+	}
+}
+
 func TestEcho(t *testing.T) {
 	e := start(t, true, "")
 	ph := e.ready(t)

@@ -211,7 +211,7 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .openai: "OpenAI"
-        case .qwen: "通义 Qwen"
+        case .qwen: "千问"
         case .gemini: "Gemini"
         case .grok: "Grok"
         }

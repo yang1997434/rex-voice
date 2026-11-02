@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/yang1997434/rex-voice/internal/call"
@@ -108,7 +109,7 @@ func serve(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	cfg.Logger.Info("rex-voiced serve", "version", version, "config", dir, "relay", *relay, "echo", *echo, "provider", c.Provider, "model", *model)
+	cfg.Logger.Info("rex-voiced serve", "version", version, "config", dir, "relay", strings.SplitN(*relay, "?", 2)[0], "echo", *echo, "provider", c.Provider, "model", *model)
 	if err := call.Run(ctx, cfg); err != nil && ctx.Err() == nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

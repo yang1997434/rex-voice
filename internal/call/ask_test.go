@@ -2,11 +2,13 @@ package call
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/yang1997434/rex-voice/internal/relay"
 	"github.com/yang1997434/rex-voice/internal/tools"
@@ -38,6 +40,78 @@ func TestAskSentDoneAndReplayed(t *testing.T) {
 	if m := ph2.ctlUntil(t, "ask"); m["block"] != "b1" {
 		t.Fatalf("replayed ask = %v", m)
 	}
+}
+
+// A multi-question AskUserQuestion keeps the pane blocked while its msg moves to the next question:
+// the phone gets a second ask with that question's options, and outside a call the relay gets a
+// second notify even within notifyEvery.
+func TestNextQuestionAsksAndNotifiesAgain(t *testing.T) {
+	qs := []struct{ msg, box string }{
+		{"answer: 晚饭吃什么？ (火锅 · 烧烤)", "晚饭吃什么？\n❯ 1. 火锅\n  2. 烧烤\n"},
+		{"answer: 喝什么？ (茶 · 水 · 可乐)", "喝什么？\n❯ 1. 茶\n  2. 水\n  3. 可乐\n"},
+	}
+	// q is the question on screen, 1-based; 0 means the pane is working
+	watch := func(q *atomic.Int32) func(*Config) {
+		set(t, &watchEvery, 20*time.Millisecond)
+		exec := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			cmd := name + " " + strings.Join(args, " ")
+			i := int(q.Load()) - 1
+			switch {
+			case cmd == "rex ls --json":
+				return []byte(`{"sessions":[{"session_id":"s1","label":"dev"}]}`), nil
+			case cmd == "rex block ls -s s1 --json":
+				return []byte(`{"blocks":[{"block_id":"b1"}]}`), nil
+			case strings.HasSuffix(cmd, "program_status") && i < 0:
+				return []byte(`{"records":[{"state":"working","app":"claude-code"}]}`), nil
+			case strings.HasSuffix(cmd, "program_status"):
+				return fmt.Appendf(nil, `{"records":[{"state":"blocked","app":"claude-code","msg":%q}]}`, qs[i].msg), nil
+			case cmd == "rex capture -s s1 -b b1" && i >= 0:
+				return []byte(qs[i].box), nil
+			}
+			return nil, fmt.Errorf("fake: unexpected command %s", cmd)
+		}
+		return func(c *Config) { c.Watch, c.Mac = true, tools.Options{Exec: exec, Home: t.TempDir()} }
+	}
+
+	t.Run("ask", func(t *testing.T) {
+		var q atomic.Int32
+		e := startWith(t, false, "", relay.NewHub(), watch(&q))
+		ph := e.ready(t)
+		for i, want := range []string{"[火锅 烧烤]", "[茶 水 可乐]"} {
+			q.Store(int32(i + 1))
+			if m := ph.ctlUntil(t, "ask"); m["block"] != "b1" || m["msg"] != qs[i].msg || fmt.Sprint(m["options"]) != want {
+				t.Fatalf("ask %d = %v, want msg %q options %s", i+1, m, qs[i].msg, want)
+			}
+		}
+	})
+
+	t.Run("notify", func(t *testing.T) {
+		set(t, &keepaliveEvery, 20*time.Millisecond)
+		h, texts, bins := recordingRelay()
+		var q atomic.Int32
+		startWith(t, false, "", h, watch(&q))
+		select { // a keepalive means the Mac holds the connection
+		case <-bins:
+		case <-time.After(wait):
+			t.Fatal("Mac never wrote to the relay")
+		}
+		for i, want := range []string{"[火锅 烧烤]", "[茶 水 可乐]"} {
+			q.Store(int32(i + 1))
+			select {
+			case got := <-texts:
+				var m struct {
+					T, Body, Block string
+					Options        []string
+				}
+				json.Unmarshal([]byte(got), &m)
+				if m.T != "notify" || m.Block != "b1" || m.Body != qs[i].msg || fmt.Sprint(m.Options) != want {
+					t.Fatalf("notify %d = %s, want body %q options %s", i+1, got, qs[i].msg, want)
+				}
+			case <-time.After(wait):
+				t.Fatalf("no notify for question %d", i+1)
+			}
+		}
+	})
 }
 
 // answerRex is a Rex with a live Claude pane bC and a plain shell pane bS; it records send / send-key.
