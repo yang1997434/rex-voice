@@ -7,7 +7,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 | 部件 | 路径 | 跑在哪 | 常驻方式 |
 |---|---|---|---|
 | `rex-voiced` Mac 服务 | `cmd/rex-voiced` + `internal/*` | 这台 Mac mini | launchd（`scripts/`） |
-| `rex-voice-relay` 中继 | `cmd/rex-voice-relay` | ccs-maruiao `23.94.9.58`，nginx `r.maruiao.top/_voice/` 后面 | systemd |
+| `rex-voice-relay` 中继 | `cmd/rex-voice-relay` | ccs-maruiao（`r.maruiao.top` 那台），nginx `r.maruiao.top/_voice/` 后面 | systemd |
 | iOS app | `ios/RexVoice` | iPhone，TestFlight 分发 | — |
 
 音频走 Mac：手机 ⇄ 中继 ⇄ Mac ⇄ OpenAI。OpenAI key 只在 Mac：服务从钥匙串读（`rex-voiced setup` 写入，服务 `rex-voice` 账户 `openai`），env `OPENAI_API_KEY` 优先，开发时用 `OPENAI_API_KEY=$(flow-cred OPENAI_API_KEY)`。手机和 Mac 之间端到端加密，中继只转发。

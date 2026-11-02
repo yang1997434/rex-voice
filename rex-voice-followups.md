@@ -4,7 +4,7 @@
 - [ ] 模型 A/B：同一组 20 句真实指令比 `gpt-realtime-2.1` / `gpt-realtime-2.1-mini` / `gpt-live-1`（准确率、首音延迟、每小时花费），定默认值，报表进 `docs/releases.md`。
 - [作废 2026-11-02] 改全局 `~/.claude/hooks/prod-guard.py`：来自 rex-voice 的输入不算授权。用户 11-02 改定：语音可以授权部署，只靠复述确认；prod-guard 只加 rex-voice 项目行（见第三批）。
 - [ ] 正式版上线后归档 `~/data/claude/voice-probe`（服务和实验用的 Tailscale grant 11-01 都已停/删）。
-- [ ] 中继独立域名（`voice.maruiao.top`）：用户想要时在阿里云 DNS 加 A 记录到 23.94.9.58，再 certbot 扩证书。
+- [ ] 中继独立域名（`voice.maruiao.top`）：用户想要时在阿里云 DNS 加 A 记录指到 `r.maruiao.top` 同一台机，再 certbot 扩证书。
 - [ ] 下一批候选：Claude 变 blocked 时主动来电（CallKit；推送已在第三批做）、整台 Mac 控制工具组（用户 11-02 定路线：Rex 这边的开发监控交流先做完整，再往整台 Mac 控制演化）。
 
 ## 2026-11-01 第一批（1、2a–2d、3a、3b）收口追加
