@@ -3,6 +3,7 @@ package relay
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -209,12 +210,33 @@ func TestForwardBothWays(t *testing.T) {
 	expectBinary(t, mac, big)
 }
 
+// pushFunc is a Notifier made of a function.
+type pushFunc func(ctx context.Context, token string, a Alert) error
+
+func (f pushFunc) Push(ctx context.Context, token string, a Alert) error { return f(ctx, token, a) }
+
+// Binary frames the relay reads while there is no peer are dropped, not queued for a later peer.
+// sendBin returning only means the frames are in the socket, so the relay may still be reading them
+// when the phone is published; it then forwards them, and the phone's first frame was "lost" (a ~1%
+// flake under -race, 2026-11-02). The notify after them is a barrier: the relay reads a connection in
+// order, so once it has pushed, every lost frame has been read and dropped.
 func TestDropWithoutPeer(t *testing.T) {
-	_, s := newRelay(t)
+	h, s := newRelay(t)
+	pushed := make(chan struct{}, 1)
+	h.Notifier = pushFunc(func(context.Context, string, Alert) error { pushed <- struct{}{}; return nil })
+	h.mu.Lock()
+	h.tokens[testID] = "tok"
+	h.mu.Unlock()
 	mac := dial(t, s, "mac", testID)
 	expectPeer(t, mac, false)
 	for i := 0; i < 200; i++ {
 		sendBin(t, mac, []byte("lost"))
+	}
+	sendText(t, mac, `{"t":"notify","title":"barrier"}`)
+	select {
+	case <-pushed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("relay never handled the notify after the lost frames")
 	}
 	phone := dial(t, s, "phone", testID)
 	expectPeer(t, phone, true)

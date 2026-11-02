@@ -39,7 +39,8 @@ func (s *server) onHangUpTool(reason string) {
 
 // onBlocked tells the user a Claude is waiting: an ask control to the phone (call or not, so the app
 // can answer it), plus through the model in a call, else a notify the relay turns into a push (at
-// most one per pane per notifyEvery). The push carries no full question.
+// most one per pane and msg per notifyEvery; the pane's next question pushes again). The push
+// carries no full question. Watch calls it again when a still-blocked pane's msg changes.
 func (s *server) onBlocked(b tools.Blocked) {
 	s.asks[b.Block] = b
 	s.sendAsk(b)
@@ -60,11 +61,11 @@ func (s *server) onBlocked(b tools.Blocked) {
 		return
 	}
 	now := time.Now()
-	if t, ok := s.notified[b.Block]; ok && now.Sub(t) < notifyEvery {
+	if n, ok := s.notified[b.Block]; ok && n.msg == b.Msg && now.Sub(n.at) < notifyEvery {
 		s.log.Info("claude blocked, notify skipped: one sent recently", "block", b.Block, "project", b.Project)
 		return
 	}
-	s.notified[b.Block] = now
+	s.notified[b.Block] = notice{now, b.Msg}
 	s.log.Info("claude blocked, notifying", "block", b.Block, "project", b.Project)
 	opts := make([]string, 0, maxPushOptions)
 	for _, o := range b.Options[:min(len(b.Options), maxPushOptions)] {
@@ -72,6 +73,12 @@ func (s *server) onBlocked(b tools.Blocked) {
 	}
 	s.writeText(map[string]any{"t": "notify", "title": b.Project + " 的 Claude 在等你", "body": truncRunes(msg, 100),
 		"block": b.Block, "options": opts})
+}
+
+// notice is the last notify sent for a pane.
+type notice struct {
+	at  time.Time
+	msg string
 }
 
 // onUnblocked: the pane is no longer waiting, so the app drops its question card.

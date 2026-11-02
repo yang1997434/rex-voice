@@ -11,6 +11,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -69,7 +70,7 @@ var (
 	fillFor        = 5 * time.Second        // silence fill: stop this long after the last real frame
 	hangupGrace    = 8 * time.Second        // hang_up waits at most this long for the model's goodbye (TurnDone)
 	watchEvery     = 5 * time.Second        // Claude watch poll interval
-	notifyEvery    = 10 * time.Minute       // at most one notify per pane in this window
+	notifyEvery    = 10 * time.Minute       // at most one notify per pane and question (msg) in this window
 )
 
 type server struct {
@@ -90,7 +91,7 @@ type server struct {
 	preview    *previewState // nil unless a voice.preview is running
 	nextSID    int
 	nextAttach uint32
-	notified   map[string]time.Time     // block -> last notify sent to the relay
+	notified   map[string]notice        // block -> last notify sent to the relay
 	asks       map[string]tools.Blocked // Claude panes blocked now; resent to the phone after every hello
 }
 
@@ -126,7 +127,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	if cfg.Watch && !cfg.Echo {
-		s.notified, s.asks = map[string]time.Time{}, map[string]tools.Blocked{}
+		s.notified, s.asks = map[string]notice{}, map[string]tools.Blocked{}
 		go tools.Watch(ctx, cfg.Mac, watchEvery, func(b tools.Blocked) { s.post(func() { s.onBlocked(b) }) },
 			func(block string) { s.post(func() { s.onUnblocked(block) }) })
 	}
@@ -175,7 +176,7 @@ func (s *server) dialLoop() {
 		if err != nil {
 			s.log.Warn("relay dial failed", "err", err, "retry_in", backoff)
 		} else {
-			s.log.Info("connected relay", "url", s.cfg.RelayURL)
+			s.log.Info("connected relay", "url", strings.SplitN(s.cfg.RelayURL, "?", 2)[0])
 			stop := context.AfterFunc(s.ctx, func() { ws.Close() })
 			if s.post(func() { s.connUp(ws) }) {
 				s.read(ws)
@@ -201,18 +202,23 @@ func (s *server) dial() (*websocket.Conn, error) {
 	origin := "http" + strings.TrimPrefix(s.cfg.RelayURL, "ws")
 	wc, err := websocket.NewConfig(s.wsURL, origin)
 	if err != nil {
-		return nil, err
+		return nil, errors.New(redactInvite(err.Error()))
 	}
 	wc.Header.Set("User-Agent", "rex-voiced/"+s.cfg.Version)
 	ctx, cancel := context.WithTimeout(s.ctx, dialTimeout)
 	defer cancel()
 	ws, err := wc.DialContext(ctx) // a 4xx/5xx upgrade response is an error here, so it is retried like any other
 	if err != nil {
-		return nil, err
+		return nil, errors.New(redactInvite(err.Error())) // websocket.DialError carries the full URL
 	}
 	ws.MaxPayloadBytes = relay.MaxFrameBytes
 	return ws, nil
 }
+
+// inviteParam is the relay invite code in a URL; it is a secret, so errors and logs show *** instead.
+var inviteParam = regexp.MustCompile(`invite=[^&\s"]*`)
+
+func redactInvite(s string) string { return inviteParam.ReplaceAllString(s, "invite=***") }
 
 type wsFrame struct {
 	data []byte
