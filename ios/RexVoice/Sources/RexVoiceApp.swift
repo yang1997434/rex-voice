@@ -34,13 +34,10 @@ struct RexVoiceApp: App {
 
     @ViewBuilder private var root: some View {
         #if DEBUG
-        let env = ProcessInfo.processInfo.environment
-        // `REXVOICE_DESIGN=f|g|h` side-layout drafts, `REXVOICE_PANEL=open` starts G's panel slid out,
-        // `REXVOICE_ORIENT=landscape` turns the window (simulator screenshots of the wide layouts).
-        ContentView(initialSheet: PreviewScreen.current.flatMap { ContentView.Sheet(rawValue: $0.rawValue) },
-                    layout: .current, panelOpen: env["REXVOICE_PANEL"] == "open")
+        // `REXVOICE_ORIENT=landscape` turns the window (simulator screenshots of the wide layout).
+        ContentView(initialSheet: PreviewScreen.current.flatMap { ContentView.Sheet(rawValue: $0.rawValue) })
             .task {
-                guard env["REXVOICE_ORIENT"] == "landscape",
+                guard ProcessInfo.processInfo.environment["REXVOICE_ORIENT"] == "landscape",
                       let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { return }
                 scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { print("REXVOICE_ORIENT: \($0)") }
             }

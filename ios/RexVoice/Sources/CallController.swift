@@ -264,7 +264,9 @@ final class CallController {
             // The Mac keeps a call across a phone reconnect; call.start is idempotent there.
             if inCall, let relay, let startMessage { Task { await relay.send(startMessage) } }
         case let .failed(message):
-            notice = message
+            // Idle (e.g. back from the background after a hang-up) the link state already says it; only a live
+            // call or sample needs telling why it dropped.
+            if inCall || previewActive { notice = message } else { link = .connecting }
         case let .audio(pcm):
             if inCall || previewActive { audio.play(pcm) }
         case let .control(m):
@@ -418,8 +420,8 @@ extension CallController {
             link = .ready; inCall = true; callState = "speaking"
             transcript = talk + [Line(fromUser: false, text: "好，我跟它说先不提交，等你回来再看迁移文件。")]
         }
-        // The side-layout drafts (`REXVOICE_DESIGN`) show where attachments land: one image + one link in a call.
-        if inCall, ProcessInfo.processInfo.environment["REXVOICE_DESIGN"] != nil {
+        // `REXVOICE_ATTACH=1` shows where attachments land: one image + one link in a call.
+        if inCall, ProcessInfo.processInfo.environment["REXVOICE_ATTACH"] == "1" {
             let shot = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 100)).image {
                 UIColor.systemTeal.setFill(); $0.fill(CGRect(x: 0, y: 0, width: 160, height: 100))
                 UIColor.systemOrange.setFill(); $0.fill(CGRect(x: 20, y: 20, width: 60, height: 60))
@@ -502,6 +504,15 @@ extension CallController {
         notice = nil
         try? await Task.sleep(for: .seconds(5.5))
         check(notice == nil, "5 s fallback did not fire a second time")
+
+        // A dropped link: no notice while idle (just reconnecting), a notice during a call.
+        handle(.failed("连接断开：操作无法完成"))
+        check(notice == nil && link == .connecting, "failed while idle: no notice")
+        inCall = true
+        handle(.failed("连接断开：操作无法完成"))
+        check(notice == "连接断开：操作无法完成", "failed in a call: notice")
+        inCall = false
+        notice = nil
 
         // Image: three chunks out of order -> one attachment.
         let jpeg = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 100)).jpegData(withCompressionQuality: 0.8) {

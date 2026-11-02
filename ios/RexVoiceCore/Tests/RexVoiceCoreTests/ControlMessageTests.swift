@@ -47,6 +47,20 @@ import Testing
         #expect(new == .callStart(provider: "grok", model: "grok-voice-3.0", voice: "ara", apiKey: "xai-1"))
     }
 
+    @Test func callStartCarriesName() throws {
+        let msg = ControlMessage.callStart(provider: "grok", model: nil, voice: nil, apiKey: nil, name: "老杨")
+        let text = #"{"t":"call.start","provider":"grok","name":"老杨"}"#
+        #expect(try Self.object(JSONEncoder().encode(msg)) == Self.object(Data(text.utf8)))
+        #expect(try JSONDecoder().decode(ControlMessage.self, from: Data(text.utf8)) == msg)
+    }
+
+    @Test func voicePreviewCarriesName() throws {
+        let msg = ControlMessage.voicePreview(provider: "qwen", model: nil, voice: "Tina", apiKey: nil, name: "老杨")
+        let text = #"{"t":"voice.preview","provider":"qwen","voice":"Tina","name":"老杨"}"#
+        #expect(try Self.object(JSONEncoder().encode(msg)) == Self.object(Data(text.utf8)))
+        #expect(try JSONDecoder().decode(ControlMessage.self, from: Data(text.utf8)) == msg)
+    }
+
     @Test func voicePreviewOmitsNilFields() throws {
         let full = ControlMessage.voicePreview(provider: "openai", model: "gpt-realtime-2.1", voice: "marin", apiKey: "sk-9")
         #expect(try Self.object(JSONEncoder().encode(full)) == Self.object(Data(

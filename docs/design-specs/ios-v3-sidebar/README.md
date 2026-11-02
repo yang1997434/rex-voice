@@ -1,5 +1,7 @@
 # Rex Voice iOS 主屏：第三轮设计稿 F / G / H——侧栏布局（2026-11-02）
 
+**2026-11-02 定稿 H，F / G 代码已删、截图留档。** 0.3.1 起 H 是主屏唯一布局，落地时的改动见文末「定稿实现（0.3.1）」；下面 F / G / H 各节是挑选时的稿子说明，代码以 `ContentView.swift` 为准。
+
 用户真机（iPhone Duo）反馈：「现在所有内容都在上方，希望改到侧边；把上面显示的供应商名和『经 r.maruiao.top』去掉；供应商移到侧边栏，显示当前用的是哪家，直接用它们的 logo 选」。这轮两版给用户挑，定稿后再出实现 brief。同批修了「选好音色一换供应商就跑回默认」（见文末）。
 
 - 代码：两版都是现行主屏 `ios/RexVoice/Sources/ContentView.swift` 的另外两种排法（`MainLayout.rail` = F、`.panel` = G），形象卡、状态行、转录卡、附件卡、主按钮全部复用现有实现，材质和 token 沿用 `V2Kit.swift` / `SettingsPage.swift` 的 `CardSurface`。供应商 logo 和选择器在 `Design/ProviderPicker.swift`。
@@ -63,6 +65,15 @@
 - 改法：去掉那两行 `removeObject`；每家的 model / voice 各存在 `model.<家>` / `voice.<家>`，切走再切回来还在。换模型后原音色不在新模型的列表里时才回该列表默认（`setModel` 原逻辑不动）。
 - 自检：DEBUG 包 `REXVOICE_SELFTEST=voice`（`AppSettings.voiceSelfTest`）：选 grok 音色 eve → 切 qwen → 切回 grok 仍是 eve；qwen 选 Ryan 后换到 qwen-audio-3.1 模型回默认音色。跑完把用户原来的选择放回去，打印 `[selftest] PASS`。把那两行加回去时只有「切回 grok 仍是 eve」一条失败（已验）。
 
+## 定稿实现（0.3.1）
+
+用户 11-02 定 H，并要求「竖栏太往上顶了，Wi-Fi 那边有内容显示时经常往下走，会遮挡；要往下放一点」。
+
+- **竖栏底部对齐**：从下往上「设置」「配对」两个 44pt 圆钮、12pt、四家 logo 竖排（48pt 格），上面全部留空，不再从状态图标下面（原来写死的 151pt）开始，常量 `duoStatusClusterBottom` 已删。竖栏底和主按钮底齐平（下安全区 + 8pt）。Duo 外屏（678pt 高）实测栏顶约 307pt（≥ 屏高 45% = 305pt）。普通竖屏（右侧栏）和横屏同样底部对齐。
+- **形象卡最小高度**：窄屏形象卡平时 0.53 倍可用高度；下面状态 / 转录 / 附件放不下时先缩到 0.42 倍整屏高（Duo 外屏约 285pt），再让这一段上下滚，主按钮固定在底。放得下时这一段不裁剪（卡片阴影完整），滚动时才裁。宽屏 / 横屏右列同样放不下就滚。
+- **状态行**：只在未配对时显示「还没配对 Mac」，不再显示供应商和中继域名。
+- 预览环境变量：`REXVOICE_DESIGN`、`REXVOICE_PANEL` 随 F / G 删掉；通话中假状态带附件改成 `REXVOICE_ATTACH=1`；`REXVOICE_ORIENT=landscape` 保留。
+
 ## 截图索引
 
 | 屏 | F「左侧竖栏」 | G「右侧面板」 |
@@ -77,5 +88,7 @@
 | Duo 外屏 · 在听 · 面板滑出 | — | [深](g/duo-outer-listening-panel-dark.jpg) / [浅](g/duo-outer-listening-panel-light.jpg) |
 
 H「Duo 外屏右侧竖栏」：Duo 外屏 · 待机 [深](h/duo-outer-idle-dark.jpg) / [浅](h/duo-outer-idle-light.jpg)；Duo 外屏 · 在听 [深](h/duo-outer-listening-dark.jpg) / [浅](h/duo-outer-listening-light.jpg)；窄 · 待机 [深](h/narrow-idle-dark.jpg) / [浅](h/narrow-idle-light.jpg)；宽（横屏）· 待机 [深](h/wide-idle-dark.jpg) / [浅](h/wide-idle-light.jpg)。
+
+定稿（0.3.1，竖栏底部对齐 + 形象卡最小高度）：Duo 外屏 · 待机 [浅](h/final-duo-outer-idle-light.jpg)；Duo 外屏 · 在听（带附件，形象卡 0.42 屏高、下段可滚）[浅](h/final-duo-outer-listening-light.jpg)。
 
 截图里当前供应商是 Grok（`REXVOICE_PROVIDER=grok`），形象是像素组。

@@ -1,8 +1,10 @@
 import AVFoundation
 import SwiftUI
 
-/// Main screen (design E「卡片」): full-screen dark, the persona in one thick card (lit edge, inner glow, grain,
-/// state-colored light), status and transcript in cards below it; settings is a page of the same cards.
+/// Main screen (design H, final 2026-11-02): the persona in one thick card (lit edge, inner glow, grain,
+/// state-colored light), status, transcript and attachments below it, and a rail on the right with the provider
+/// logos plus pairing / settings. On the Duo outer screen the rail lives in the status-bar column; settings is a
+/// page of the same cards.
 struct ContentView: View {
     @Environment(CallController.self) private var controller
     @Environment(AppSettings.self) private var settings
@@ -15,36 +17,18 @@ struct ContentView: View {
     @State private var missingKey: VoiceProvider?
     /// Image attachment shown full screen.
     @State private var zoomed: CallController.Attachment?
-    /// Design G, narrow: the side panel slid out over the persona.
-    @State private var panelOpen: Bool
-    let layout: MainLayout
+    /// Natural height of status + transcript + attachments; their scroll view grows to it and no further.
+    @State private var infoHeight: CGFloat = .infinity
+    /// That part is taller than its room and scrolls; only then is it clipped (card shadows cut at its edges).
+    @State private var infoScrolls = false
 
     enum Sheet: String, Identifiable {
         case settings, pair
         var id: String { rawValue }
     }
 
-    /// `cards` is the shipped screen; `rail` (F), `panel` (G) and `duoRail` (H) are the 2026-11-02 side-layout drafts,
-    /// reachable only from DEBUG builds via `REXVOICE_DESIGN=f|g|h`.
-    enum MainLayout {
-        case cards, rail, panel, duoRail
-
-        #if DEBUG
-        static var current: MainLayout {
-            switch ProcessInfo.processInfo.environment["REXVOICE_DESIGN"] {
-            case "f": .rail
-            case "g": .panel
-            case "h": .duoRail
-            default: .cards
-            }
-        }
-        #endif
-    }
-
-    init(initialSheet: Sheet? = nil, layout: MainLayout = .cards, panelOpen: Bool = false) {
+    init(initialSheet: Sheet? = nil) {
         _sheet = State(initialValue: initialSheet)
-        _panelOpen = State(initialValue: panelOpen)
-        self.layout = layout
     }
 
     var body: some View {
@@ -54,41 +38,37 @@ struct ContentView: View {
         // Laid out from the live size every pass, so Duo fold / unfold and rotation re-flow it.
         GeometryReader { geo in
             let wide = hSize == .regular || geo.size.width > geo.size.height
+            // Duo outer screen: the status bar is a column down the right edge with only the clock / Wi-Fi / battery
+            // at its top. Landscape iPhones also have side insets (the Dynamic Island), so only a portrait screen counts.
+            let column = !wide && geo.safeAreaInsets.trailing >= 56
             // No status bar above us (Duo outer screen, landscape): the top keeps its own margin from the edge.
             let topGap = max(0, 14 - geo.safeAreaInsets.top)
-            switch layout {
-            case .cards:
-                VStack(spacing: 14) {
-                    topBar.padding(.top, topGap)
-                    if wide {
-                        twoColumns(phase, state: state, mood: mood)
-                    } else {
-                        stackedColumn(phase, state: state, mood: mood, height: geo.size.height)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-                .frame(maxWidth: 900)
-                .frame(maxWidth: .infinity)
-            case .rail:
+            ZStack {
                 HStack(spacing: 12) {
-                    sideRail
                     if wide {
                         twoColumns(phase, state: state, mood: mood)
                     } else {
-                        VStack(spacing: 14) { stackedColumn(phase, state: state, mood: mood, height: geo.size.height) }
+                        stackedColumn(phase, state: state, mood: mood, height: geo.size.height,
+                                      screen: geo.size.height + geo.safeAreaInsets.top + geo.safeAreaInsets.bottom)
                     }
+                    if !column { sideRail.frame(maxHeight: .infinity, alignment: .bottom) }
                 }
                 .padding(.top, topGap)
-                .padding(.leading, 10)
-                .padding(.trailing, 16)
+                .padding(.leading, 16)
+                .padding(.trailing, column ? 16 : 10)
                 .padding(.bottom, 8)
                 .frame(maxWidth: 960)
                 .frame(maxWidth: .infinity)
-            case .panel:
-                panelLayout(phase, state: state, mood: mood, geo: geo, wide: wide, topGap: topGap)
-            case .duoRail:
-                duoRailLayout(phase, state: state, mood: mood, geo: geo, wide: wide, topGap: topGap)
+
+                if column {
+                    // Bottom-aligned, level with the call button, so it stays clear of the status icons (and whatever
+                    // the system grows below them) at the column's top.
+                    sideRail
+                        .padding(.bottom, 8)
+                        .frame(width: geo.safeAreaInsets.trailing)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .ignoresSafeArea(.container, edges: [.top, .trailing])
+                }
             }
         }
         .background { pageBackground }
@@ -143,9 +123,7 @@ struct ContentView: View {
                 personaCard(phase, state: state, mood: mood)
                     .frame(width: cardWidth, height: cardWidth / 0.9)
                 VStack(spacing: 14) {
-                    statusRow(phase, mood: mood)
-                    transcriptCard(phase, mood: mood)
-                    attachmentsCard(mood)
+                    infoSection(phase, mood: mood)
                     Spacer(minLength: 0)
                     callButton(phase)
                 }
@@ -155,23 +133,50 @@ struct ContentView: View {
         }
     }
 
-    /// Narrow screens: the card at 0.53 of the height; on a short screen it gives way first so nothing is pushed off.
-    @ViewBuilder private func stackedColumn(_ phase: CallPhase, state: PersonaState, mood: Mood, height: CGFloat) -> some View {
-        personaCard(phase, state: state, mood: mood)
-            .frame(maxHeight: height * 0.53)
-            .layoutPriority(1)
-        statusRow(phase, mood: mood)
-        transcriptCard(phase, mood: mood)
-        attachmentsCard(mood)
-        Spacer(minLength: 0)
-        callButton(phase)
+    /// Narrow screens: the card at 0.53 of the usable height; when status, transcript and attachments do not fit
+    /// under it the card gives way down to 0.42 of the whole screen, then that part scrolls. The call button stays
+    /// at the bottom.
+    private func stackedColumn(_ phase: CallPhase, state: PersonaState, mood: Mood, height: CGFloat,
+                               screen: CGFloat) -> some View {
+        VStack(spacing: 14) {
+            VStack(spacing: 14) {
+                personaCard(phase, state: state, mood: mood)
+                    .frame(minHeight: min(screen * 0.42, height * 0.53), maxHeight: height * 0.53)
+                infoSection(phase, mood: mood).layoutPriority(1)
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+            callButton(phase)
+        }
     }
 
-    /// Design F: a 56pt rail on the left, provider logos on top, pairing and settings at the bottom.
+    /// Status, transcript and attachments, scrolling only when they do not fit. Unclipped while they fit so the card
+    /// shadows draw in full; while scrolling the 12pt / 4pt inset keeps most of them.
+    private func infoSection(_ phase: CallPhase, mood: Mood) -> some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                statusRow(phase, mood: mood)
+                transcriptCard(phase, mood: mood)
+                attachmentsCard(mood)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { infoHeight = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollIndicators(.hidden)
+        .onScrollGeometryChange(for: Bool.self) { $0.contentSize.height > $0.containerSize.height + 0.5 }
+                                action: { _, scrolls in infoScrolls = scrolls }
+        .scrollClipDisabled(!infoScrolls)
+        .frame(maxHeight: infoHeight)
+        .padding(.horizontal, -12)
+        .padding(.vertical, -4)
+    }
+
+    /// 56pt rail, bottom-aligned: provider logos, then pairing and settings at the bottom.
     private var sideRail: some View {
         VStack(spacing: 8) {
             ProviderPicker(axis: .vertical, cell: 48)
-            Spacer(minLength: 12)
+                .padding(.bottom, 4) // 12pt to the buttons with the stack's 8
             V2IconButton(title: "配对", symbol: "qrcode.viewfinder") { sheet = .pair }
             V2IconButton(title: "设置", symbol: "slider.horizontal.3") { sheet = .settings }
         }
@@ -180,157 +185,12 @@ struct ContentView: View {
         .background(CardSurface(radius: 28).opacity(0.92))
     }
 
-    /// Design G. Wide: the persona fills the left, a fixed 300pt panel on the right. Narrow: the persona takes the
-    /// full width and the panel hides behind a grabber on the right edge, sliding out over a dimmed screen.
-    @ViewBuilder private func panelLayout(_ phase: CallPhase, state: PersonaState, mood: Mood, geo: GeometryProxy,
-                                          wide: Bool, topGap: CGFloat) -> some View {
-        if wide {
-            HStack(spacing: 16) {
-                personaCard(phase, state: state, mood: mood)
-                sidePanel(phase, mood: mood, withCall: true).frame(width: 300)
-            }
-            .padding(.top, topGap)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-        } else {
-            ZStack(alignment: .trailing) {
-                VStack(spacing: 14) {
-                    personaCard(phase, state: state, mood: mood)
-                    if let notice = controller.notice {
-                        NoticePill(text: notice) { controller.notice = nil }
-                    }
-                    callButton(phase)
-                }
-                .padding(.top, topGap)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-                .accessibilityHidden(panelOpen)
-
-                if !panelOpen {
-                    Button { setPanel(true) } label: {
-                        Capsule().fill(Color.primary.opacity(0.35)).frame(width: 5, height: 56)
-                            .frame(width: 28, height: 132)
-                            .contentShape(.rect)
-                    }
-                    .buttonStyle(PressScale())
-                    .accessibilityLabel("打开面板")
-                    .transition(.opacity)
-                }
-
-                if panelOpen {
-                    Color.black.opacity(scheme == .dark ? 0.5 : 0.28)
-                        .ignoresSafeArea()
-                        .onTapGesture { setPanel(false) }
-                        .accessibilityHidden(true)
-                        .transition(.opacity)
-                    sidePanel(phase, mood: mood, withCall: false)
-                        .padding(14)
-                        .frame(width: min(300, geo.size.width - 48))
-                        .frame(maxHeight: .infinity, alignment: .top)
-                        .background {
-                            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                .fill(scheme == .dark ? Color(white: 0.06) : Color(white: 0.95))
-                                .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                    .strokeBorder(.white.opacity(scheme == .dark ? 0.1 : 0.8), lineWidth: 1))
-                                .shadow(color: .black.opacity(scheme == .dark ? 0.6 : 0.18), radius: 24, x: -6)
-                        }
-                        .padding(.vertical, 8)
-                        .padding(.trailing, 8)
-                        .gesture(DragGesture(minimumDistance: 20).onEnded { if $0.translation.width > 60 { setPanel(false) } })
-                        .accessibilityAction(.escape) { setPanel(false) }
-                        .transition(reduceMotion ? .opacity : .move(edge: .trailing))
-                }
-            }
-        }
-    }
-
-    /// Design H. On the Duo outer screen the system status bar is a column down the right edge with only the clock /
-    /// Wi-Fi / battery at its top; the rail lives in that column under them, so the content keeps its full width.
-    /// Without such a column (plain iPhone portrait, landscape, Duo unfolded) it is F's rail moved to the right.
-    @ViewBuilder private func duoRailLayout(_ phase: CallPhase, state: PersonaState, mood: Mood, geo: GeometryProxy,
-                                            wide: Bool, topGap: CGFloat) -> some View {
-        // Landscape iPhones also have side insets (the Dynamic Island), so only a portrait screen counts.
-        let column = !wide && geo.safeAreaInsets.trailing >= 56
-        ZStack(alignment: .topTrailing) {
-            HStack(spacing: 12) {
-                if wide {
-                    twoColumns(phase, state: state, mood: mood)
-                } else {
-                    VStack(spacing: 14) { stackedColumn(phase, state: state, mood: mood, height: geo.size.height) }
-                }
-                if !column { sideRail }
-            }
-            .padding(.top, topGap)
-            .padding(.leading, 16)
-            .padding(.trailing, column ? 16 : 10)
-            .padding(.bottom, 8)
-            .frame(maxWidth: 960)
-            .frame(maxWidth: .infinity)
-
-            if column {
-                sideRail
-                    .padding(.top, Self.duoStatusClusterBottom + 12)
-                    .padding(.bottom, 8)
-                    .frame(width: geo.safeAreaInsets.trailing)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                    .ignoresSafeArea(.container, edges: [.top, .trailing])
-            }
-        }
-    }
-
-    /// Bottom of the Duo outer screen's status icons (clock, Wi-Fi ring, battery dots), in points from the screen top;
-    /// measured on the iOS 27.2 simulator. shortcut: a constant, re-measure if a later iOS moves the icons.
-    private static let duoStatusClusterBottom: CGFloat = 151
-
-    private func setPanel(_ open: Bool) {
-        withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : .smooth(duration: 0.35)) { panelOpen = open }
-    }
-
-    /// Design G's panel: logos + pairing / settings in one tray, then status, transcript, attachments.
-    private func sidePanel(_ phase: CallPhase, mood: Mood, withCall: Bool) -> some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 8) {
-                ProviderPicker(axis: .horizontal, cell: 40)
-                Spacer(minLength: 0)
-                V2IconButton(title: "配对", symbol: "qrcode.viewfinder", size: 36) { sheet = .pair }
-                V2IconButton(title: "设置", symbol: "slider.horizontal.3", size: 36) { sheet = .settings }
-            }
-            .padding(8)
-            .background(CardSurface(radius: 24).opacity(0.92))
-            // Scrolls when it does not fit (landscape is ~400pt tall); the 12pt inset keeps the card shadows unclipped.
-            ScrollView {
-                VStack(spacing: 14) {
-                    statusRow(phase, mood: mood)
-                    transcriptCard(phase, mood: mood)
-                    attachmentsCard(mood)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
-            }
-            .padding(.horizontal, -12)
-            .scrollBounceBehavior(.basedOnSize)
-            .scrollIndicators(.hidden)
-            if withCall { callButton(phase) }
-        }
-    }
-
     private var pageBackground: some View {
         ZStack {
             scheme == .dark ? Color(white: 0.04) : Color(white: 0.95)
             GrainOverlay(opacity: 0.05)
         }
         .ignoresSafeArea()
-    }
-
-    private var topBar: some View {
-        HStack(spacing: 10) {
-            Wordmark()
-            Spacer()
-            V2IconButton(title: "配对", symbol: "qrcode.viewfinder") { sheet = .pair }
-            V2IconButton(title: "设置", symbol: "slider.horizontal.3") { sheet = .settings }
-        }
-        .padding(.horizontal, 4)
-        .padding(.top, 4)
     }
 
     /// The thick card: state-colored light inside, grain, a lit top edge, inner glow, two-layer shadow.
@@ -398,12 +258,9 @@ struct ContentView: View {
                 Spacer()
                 if phase.live { WaveBars(live: true, count: 4, height: 14).foregroundStyle(mood.accent) }
             }
-            // F / G show the provider as the highlighted logo, so only the unpaired line stays.
-            if layout == .cards || controller.link == .unpaired {
-                Text(controller.link == .unpaired ? "还没配对 Mac"
-                     : settings.provider.title + (controller.relayHost.map { " · 经 \($0)" } ?? ""))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+            // The provider shows as the highlighted logo in the rail, so only the unpaired line stays.
+            if controller.link == .unpaired {
+                Text("还没配对 Mac").font(.footnote).foregroundStyle(.secondary)
             }
             if let notice = controller.notice {
                 NoticePill(text: notice) { controller.notice = nil }

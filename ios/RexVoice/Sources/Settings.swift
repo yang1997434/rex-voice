@@ -21,6 +21,10 @@ final class AppSettings {
     var personaID: String {
         didSet { defaults.set(personaID, forKey: Self.personaKey) }
     }
+    /// How the assistant addresses the user; empty = the Mac config's `name`.
+    var name: String {
+        didSet { defaults.set(name, forKey: "name") }
+    }
     /// Last four characters of each saved key, for「已保存 ••••1234」; the key itself is read only when a call starts.
     private(set) var keyTails: [VoiceProvider: String] = [:]
     /// Bumped on model / voice writes so views reading them refresh (they are stored in UserDefaults, not here).
@@ -32,6 +36,7 @@ final class AppSettings {
     init() {
         provider = defaults.string(forKey: "provider").flatMap(VoiceProvider.init(rawValue:)) ?? .openai
         personaID = defaults.string(forKey: Self.personaKey) ?? ""
+        name = defaults.string(forKey: "name") ?? ""
         for p in VoiceProvider.allCases {
             if let key = try? Self.storedKey(p) { keyTails[p] = String(key.suffix(4)) }
         }
@@ -98,13 +103,18 @@ final class AppSettings {
     /// What `call.start` carries for the current provider.
     func callStart() throws -> ControlMessage {
         .callStart(provider: provider.rawValue, model: model(for: provider), voice: voice(for: provider),
-                   apiKey: try apiKey(for: provider))
+                   apiKey: try apiKey(for: provider), name: sentName)
     }
 
-    /// The same four fields as `callStart()`, for a voice sample.
+    /// The same fields as `callStart()`, for a voice sample.
     func voicePreview() throws -> ControlMessage {
         .voicePreview(provider: provider.rawValue, model: model(for: provider), voice: voice(for: provider),
-                      apiKey: try apiKey(for: provider))
+                      apiKey: try apiKey(for: provider), name: sentName)
+    }
+
+    private var sentName: String? {
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return n.isEmpty ? nil : n
     }
 
     #if DEBUG

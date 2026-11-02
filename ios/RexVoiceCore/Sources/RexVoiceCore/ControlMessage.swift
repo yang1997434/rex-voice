@@ -5,11 +5,12 @@ import Foundation
 public enum ControlMessage: Codable, Equatable, Sendable {
     // phone -> Mac
     case hello(app: String, device: String, deviceID: String)
-    /// All four optional; nil fields are left out of the JSON and the Mac falls back to its own defaults.
-    case callStart(provider: String?, model: String?, voice: String?, apiKey: String?)
+    /// All optional; nil fields are left out of the JSON and the Mac falls back to its own defaults.
+    /// `name` is how the assistant addresses the user, replacing the Mac config's `name` for this call.
+    case callStart(provider: String?, model: String?, voice: String?, apiKey: String?, name: String? = nil)
     case callEnd
     /// Voice sample outside a call; same optional fields as `callStart`.
-    case voicePreview(provider: String?, model: String?, voice: String?, apiKey: String?)
+    case voicePreview(provider: String?, model: String?, voice: String?, apiKey: String?, name: String? = nil)
     // Mac -> phone
     /// `detail` is optional: the Mac side currently sends status without it.
     case status(state: String, detail: String?)
@@ -43,13 +44,15 @@ public enum ControlMessage: Codable, Equatable, Sendable {
             self = .callStart(provider: try c.decodeIfPresent(String.self, forKey: .provider),
                               model: try c.decodeIfPresent(String.self, forKey: .model),
                               voice: try c.decodeIfPresent(String.self, forKey: .voice),
-                              apiKey: try c.decodeIfPresent(String.self, forKey: .apiKey))
+                              apiKey: try c.decodeIfPresent(String.self, forKey: .apiKey),
+                              name: try c.decodeIfPresent(String.self, forKey: .name))
         case "call.end": self = .callEnd
         case "voice.preview":
             self = .voicePreview(provider: try c.decodeIfPresent(String.self, forKey: .provider),
                                  model: try c.decodeIfPresent(String.self, forKey: .model),
                                  voice: try c.decodeIfPresent(String.self, forKey: .voice),
-                                 apiKey: try c.decodeIfPresent(String.self, forKey: .apiKey))
+                                 apiKey: try c.decodeIfPresent(String.self, forKey: .apiKey),
+                                 name: try c.decodeIfPresent(String.self, forKey: .name))
         case "status":
             self = .status(state: try c.decode(String.self, forKey: .state),
                            detail: try c.decodeIfPresent(String.self, forKey: .detail))
@@ -78,19 +81,21 @@ public enum ControlMessage: Codable, Equatable, Sendable {
             try c.encode(app, forKey: .app)
             try c.encode(device, forKey: .device)
             try c.encode(deviceID, forKey: .deviceID)
-        case let .callStart(provider, model, voice, apiKey):
+        case let .callStart(provider, model, voice, apiKey, name):
             try c.encode("call.start", forKey: .t)
             try c.encodeIfPresent(provider, forKey: .provider)
             try c.encodeIfPresent(model, forKey: .model)
             try c.encodeIfPresent(voice, forKey: .voice)
             try c.encodeIfPresent(apiKey, forKey: .apiKey)
+            try c.encodeIfPresent(name, forKey: .name)
         case .callEnd: try c.encode("call.end", forKey: .t)
-        case let .voicePreview(provider, model, voice, apiKey):
+        case let .voicePreview(provider, model, voice, apiKey, name):
             try c.encode("voice.preview", forKey: .t)
             try c.encodeIfPresent(provider, forKey: .provider)
             try c.encodeIfPresent(model, forKey: .model)
             try c.encodeIfPresent(voice, forKey: .voice)
             try c.encodeIfPresent(apiKey, forKey: .apiKey)
+            try c.encodeIfPresent(name, forKey: .name)
         case let .status(state, detail):
             try c.encode("status", forKey: .t)
             try c.encode(state, forKey: .state)

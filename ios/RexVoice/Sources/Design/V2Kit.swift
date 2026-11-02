@@ -200,28 +200,20 @@ struct V2CallButton: View {
 struct V2IconButton: View {
     let title: String
     let symbol: String
-    var size: CGFloat = 44
     let action: () -> Void
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(size < 44 ? .subheadline.weight(.medium) : .body.weight(.medium))
-                .frame(width: size, height: size)
+                .font(.body.weight(.medium))
+                .frame(width: 44, height: 44)
                 .background(Circle().fill(scheme == .dark ? Color.white.opacity(0.1) : Color.white.opacity(0.6)))
                 .overlay(Circle().strokeBorder(.white.opacity(scheme == .dark ? 0.12 : 0.7), lineWidth: 1))
         }
         .buttonStyle(PressScale())
         .foregroundStyle(.primary)
         .accessibilityLabel(title)
-    }
-}
-
-/// Serif wordmark, Hark-style.
-struct Wordmark: View {
-    var body: some View {
-        Text("Rex Voice").font(.system(.title3, design: .serif).weight(.semibold))
     }
 }
 

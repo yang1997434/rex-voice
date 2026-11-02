@@ -108,6 +108,7 @@ struct SettingsPage: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 14) {
+                    basicSection
                     personaSection.id("persona")
                     voiceSection.id("voices")
                     keySection.id("key")
@@ -176,6 +177,28 @@ struct SettingsPage: View {
             GrainOverlay(opacity: 0.05)
         }
         .ignoresSafeArea()
+    }
+
+    // MARK: 基本
+
+    private var basicSection: some View {
+        @Bindable var settings = settings
+        return V2Section(symbol: "person.text.rectangle", title: "基本") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("称呼").font(.subheadline.weight(.medium))
+                TextField("Mac 配置里的名字", text: $settings.name)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 48)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.primary.opacity(0.06)))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.primary.opacity(0.2), lineWidth: 1))
+                    .accessibilityLabel("称呼")
+                Text("助手怎么叫你，下次通话和试听生效；空着就用 Mac 配置里的名字。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     // MARK: 形象

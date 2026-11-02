@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Design F / G (2026-11-02 draft): the provider is picked from its logo on the main screen.
+// Design H (final 2026-11-02): the provider is picked from its logo in the main screen's rail.
 
 /// Stand-in logo: a brand-colored disc with a white simplified glyph (OpenAI six-petal knot, Qwen「Q」,
 /// Gemini sparkle, Grok「X」). shortcut: self-drawn marks, swap in the official art once the user supplies it.
