@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -465,19 +466,206 @@ func TestIdlePromptThenHangUp(t *testing.T) {
 	ai.waitClosed(t)
 }
 
+// toolCall is an OpenAI function call of response r1.
+func toolCall(name, args string) string {
+	a, _ := json.Marshal(args)
+	return `{"type":"response.output_item.done","response_id":"r1","item":{"type":"function_call","id":"fc_` + name + `","call_id":"c_` + name + `","name":"` + name + `","arguments":` + string(a) + `}}`
+}
+
+const responseDone2 = `{"type":"response.done","response":{"id":"r2","status":"completed"}}`
+
+// hang_up only marks the call: the goodbye (including the held tail under one frame) reaches the
+// phone first, and the call ends when the model's turn is done.
 func TestHangUpTool(t *testing.T) {
 	e := start(t, false, "")
 	ph, ai := e.inCall(t)
-	ai.push(t, `{"type":"response.output_item.done","response_id":"r1","item":{"type":"function_call","id":"fc1","call_id":"c1","name":"hang_up","arguments":"{\"reason\":\"拜拜\"}"}}`)
+	bye := pattern(1000, 5) // one whole frame now, a 40-byte tail held until the turn ends
+	ai.push(t, delta("it1", bye))
+	ai.push(t, toolCall("hang_up", `{"reason":"拜拜"}`))
 	ai.push(t, responseDone)
-	ph.expectStatus(t, "thinking", "ended")
-	if m := ph.ctlUntil(t, "hang_up"); m["reason"] != "user" {
-		t.Fatalf("hang_up = %v", m)
+	ai.next(t, "response.create") // tool output went back; the model finishes its turn
+	ai.push(t, responseDone2)
+	var got []byte
+	for {
+		typ, plain := ph.next(t)
+		if typ == pair.TypeAudio {
+			got = append(got, plain...)
+			continue
+		}
+		var m map[string]any
+		json.Unmarshal(plain, &m)
+		if m["t"] == "hang_up" {
+			if m["reason"] != "user" {
+				t.Fatalf("hang_up = %v", m)
+			}
+			break
+		}
+	}
+	if !bytes.Equal(got, bye) {
+		t.Fatalf("phone got %d bytes of the goodbye before hang_up, want %d", len(got), len(bye))
 	}
 	ai.waitClosed(t)
 
 	ph.ctl(t, map[string]any{"t": "call.start"}) // back to waiting: a new call dials again
 	e.ai.accept(t)
+}
+
+// A model that never finishes its turn after hang_up is hung up on after hangupGrace.
+func TestHangUpToolGraceTimeout(t *testing.T) {
+	set(t, &hangupGrace, 300*time.Millisecond)
+	e := start(t, false, "")
+	ph, ai := e.inCall(t)
+	t0 := time.Now()
+	ai.push(t, toolCall("hang_up", `{}`))
+	ai.push(t, responseDone)
+	if m := ph.ctlUntil(t, "hang_up"); m["reason"] != "user" {
+		t.Fatalf("hang_up = %v", m)
+	}
+	if d := time.Since(t0); d < 250*time.Millisecond {
+		t.Fatalf("hung up after %v, before the grace period", d)
+	}
+	ai.waitClosed(t)
+}
+
+// fakeRex answers the Claude watch with one claude-code pane (no pid, so the project is the
+// session label "dev"), blocked while *blocked is set.
+func fakeRex(blocked *atomic.Bool) func(context.Context, string, ...string) ([]byte, error) {
+	return func(_ context.Context, name string, args ...string) ([]byte, error) {
+		cmd := name + " " + strings.Join(args, " ")
+		switch {
+		case cmd == "rex ls --json":
+			return []byte(`{"sessions":[{"session_id":"s1","label":"dev"}]}`), nil
+		case cmd == "rex block ls -s s1 --json":
+			return []byte(`{"blocks":[{"block_id":"b1"}]}`), nil
+		case strings.HasSuffix(cmd, "program_status"):
+			st := "working"
+			if blocked.Load() {
+				st = "blocked"
+			}
+			return fmt.Appendf(nil, `{"records":[{"state":%q,"app":"claude-code","msg":"要合并 PR 吗？"}]}`, st), nil
+		}
+		return nil, fmt.Errorf("fake: unexpected command %s", cmd)
+	}
+}
+
+func withWatch(t *testing.T, blocked *atomic.Bool) func(*Config) {
+	set(t, &watchEvery, 20*time.Millisecond)
+	return func(c *Config) { c.Watch, c.Mac = true, tools.Options{Exec: fakeRex(blocked), Home: t.TempDir()} }
+}
+
+func TestBlockedClaudeToldInCall(t *testing.T) {
+	var blocked atomic.Bool
+	e := startWith(t, false, "", relay.NewHub(), withWatch(t, &blocked))
+	_, ai := e.inCall(t)
+	blocked.Store(true)
+	b, _ := json.Marshal(ai.next(t, "conversation.item.create"))
+	if !strings.Contains(string(b), "dev 的 Claude 卡住了") || !strings.Contains(string(b), "要合并 PR 吗") {
+		t.Fatalf("blocked prompt = %s", b)
+	}
+	ai.next(t, "response.create")
+}
+
+// Outside a call the Mac sends the relay a notify text frame, at most one per pane per notifyEvery.
+func TestBlockedClaudeNotifiesRelayOutsideCall(t *testing.T) {
+	set(t, &keepaliveEvery, 20*time.Millisecond)
+	texts, bins := make(chan string, 10), make(chan struct{}, 100)
+	h := websocket.Handler(func(ws *websocket.Conn) { // fake relay: only records what the Mac writes
+		for {
+			var f wsFrame
+			if frameCodec.Receive(ws, &f) != nil {
+				return
+			}
+			if f.typ == websocket.TextFrame {
+				texts <- string(f.data)
+			} else {
+				select {
+				case bins <- struct{}{}:
+				default:
+				}
+			}
+		}
+	})
+	var blocked atomic.Bool
+	startWith(t, false, "", h, withWatch(t, &blocked))
+	select { // a keepalive means the Mac holds the connection
+	case <-bins:
+	case <-time.After(wait):
+		t.Fatal("Mac never wrote to the relay")
+	}
+	blocked.Store(true)
+	select {
+	case got := <-texts:
+		var m map[string]string
+		json.Unmarshal([]byte(got), &m)
+		if m["t"] != "notify" || m["title"] != "dev 的 Claude 在等你" || m["body"] != "要合并 PR 吗？" {
+			t.Fatalf("notify = %s", got)
+		}
+	case <-time.After(wait):
+		t.Fatal("no notify text frame")
+	}
+	blocked.Store(false) // leave and re-enter blocked within notifyEvery: no second push
+	time.Sleep(150 * time.Millisecond)
+	blocked.Store(true)
+	select {
+	case got := <-texts:
+		t.Fatalf("second notify within notifyEvery: %s", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// show_file shrinks the image with sips, then the phone gets the attach control and every chunk in order.
+func TestShowFileSendsChunks(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "shot.png")
+	os.WriteFile(src, []byte("png"), 0o600)
+	jpeg := pattern(130000, 9) // 60000 + 60000 + 10000
+	var sipsArgs atomic.Value
+	e := startWith(t, false, "", relay.NewHub(), func(c *Config) {
+		c.Mac.Exec = func(_ context.Context, name string, args ...string) ([]byte, error) {
+			sipsArgs.Store(name + " " + strings.Join(args, " "))
+			if name != "sips" || len(args) < 2 || args[len(args)-2] != "--out" {
+				return nil, fmt.Errorf("unexpected %s %v", name, args)
+			}
+			return nil, os.WriteFile(args[len(args)-1], jpeg, 0o600)
+		}
+	})
+	ph, ai := e.inCall(t)
+	ai.push(t, toolCall("show_file", `{"path":"`+src+`"}`))
+	ai.push(t, responseDone)
+	m := ph.ctlUntil(t, "attach")
+	if m["name"] != "shot.png" || m["mime"] != "image/jpeg" || m["size"] != float64(len(jpeg)) || m["chunks"] != float64(3) {
+		t.Fatalf("attach = %v", m)
+	}
+	id := uint32(m["id"].(float64))
+	var got []byte
+	for i := range 3 {
+		typ, plain := ph.next(t)
+		if typ != pair.TypeAttach || binary.BigEndian.Uint32(plain) != id || binary.BigEndian.Uint32(plain[4:]) != uint32(i) {
+			t.Fatalf("frame %d: type %d header %x", i, typ, plain[:min(8, len(plain))])
+		}
+		got = append(got, plain[8:]...)
+	}
+	if !bytes.Equal(got, jpeg) {
+		t.Fatalf("reassembled %d bytes, want the sips output", len(got))
+	}
+	if b, _ := json.Marshal(ai.next(t, "conversation.item.create")); !strings.Contains(string(b), `\"chunks\":3`) {
+		t.Fatalf("tool output = %s", b)
+	}
+	if a := sipsArgs.Load().(string); !strings.HasPrefix(a, "sips -Z 1280 -s format jpeg "+src+" --out ") {
+		t.Fatalf("sips args = %s", a)
+	}
+}
+
+func TestShowLink(t *testing.T) {
+	e := start(t, false, "")
+	ph, ai := e.inCall(t)
+	ai.push(t, toolCall("show_link", `{"url":"https://r.maruiao.top/_r/x","title":"汇报页"}`))
+	ai.push(t, responseDone)
+	if m := ph.ctlUntil(t, "link"); m["url"] != "https://r.maruiao.top/_r/x" || m["title"] != "汇报页" {
+		t.Fatalf("link = %v", m)
+	}
+	if b, _ := json.Marshal(ai.next(t, "conversation.item.create")); !strings.Contains(string(b), `\"sent\":\"https://r.maruiao.top/_r/x\"`) {
+		t.Fatalf("tool output = %s", b)
+	}
 }
 
 func TestInstructionsRebuiltPerCall(t *testing.T) {

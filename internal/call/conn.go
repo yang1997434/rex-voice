@@ -31,9 +31,14 @@ type Config struct {
 	Voice voice.Config
 	// Key, if set, is the fallback key of a provider when call.start brings none (the Keychain).
 	// Called off the Run goroutine; its result is never logged.
-	Key     func(p voice.Provider) string
-	Tools   *tools.Registry // Run registers hang_up into it; must not already contain one. Unused with Echo.
-	Echo    bool            // no provider: echo phone audio back after 1 s (iOS bring-up)
+	Key   func(p voice.Provider) string
+	Tools *tools.Registry // Run registers hang_up into it; must not already contain one. Unused with Echo.
+	Echo  bool            // no provider: echo phone audio back after 1 s (iOS bring-up)
+	// Mac is Exec / Home for show_file and the Claude watch; zero value = real commands.
+	Mac tools.Options
+	// Watch polls Rex for Claude panes turning blocked and tells the user (in the call, or by a
+	// notify text frame to the relay). Ignored with Echo.
+	Watch   bool
 	Logger  *slog.Logger
 	Version string
 
@@ -59,6 +64,9 @@ var (
 	fillEvery      = 20 * time.Millisecond  // silence fill: check interval
 	fillAfter      = 200 * time.Millisecond // silence fill: start only after this gap, so relay jitter does not splice zeros into speech
 	fillFor        = 5 * time.Second        // silence fill: stop this long after the last real frame
+	hangupGrace    = 8 * time.Second        // hang_up waits at most this long for the model's goodbye (TurnDone)
+	watchEvery     = 5 * time.Second        // Claude watch poll interval
+	notifyEvery    = 10 * time.Minute       // at most one notify per pane in this window
 )
 
 type server struct {
@@ -69,15 +77,17 @@ type server struct {
 	wsURL  string
 
 	// Everything below is owned by the Run goroutine.
-	ws        *websocket.Conn
-	lastWrite time.Time
-	macSalt   [16]byte
-	seen      map[[16]byte]bool // phone salts already used with macSalt; nil until the peer is present
-	rx, tx    *pair.Cipher      // nil until both salts are known
-	helloOK   bool
-	call      *callState
-	preview   *previewState // nil unless a voice.preview is running
-	nextSID   int
+	ws         *websocket.Conn
+	lastWrite  time.Time
+	macSalt    [16]byte
+	seen       map[[16]byte]bool // phone salts already used with macSalt; nil until the peer is present
+	rx, tx     *pair.Cipher      // nil until both salts are known
+	helloOK    bool
+	call       *callState
+	preview    *previewState // nil unless a voice.preview is running
+	nextSID    int
+	nextAttach uint32
+	notified   map[string]time.Time // block -> last notify sent to the relay
 }
 
 // Run keeps the Mac connected to the relay and serves calls until ctx is done; it returns ctx.Err().
@@ -96,17 +106,21 @@ func Run(ctx context.Context, cfg Config) error {
 		wsURL: cfg.RelayURL + "?role=mac&id=" + base64.RawURLEncoding.EncodeToString(cfg.Pairing.ID[:])}
 	if !cfg.Echo {
 		cfg.Tools.Register(tools.HangUpDef(func(reason string) {
-			s.post(func() {
-				s.log.Info("hang_up tool", "reason", reason)
-				s.endCall("user")
-			})
+			s.post(func() { s.onHangUpTool(reason) })
 		}))
+		cfg.Tools.Register(tools.ShowFileDef(cfg.Mac, s.showFile))
+		cfg.Tools.Register(tools.ShowLinkDef(s.showLink))
 		s.cfg.Voice.Tools = cfg.Tools.Defs()
 		s.cfg.Voice.Call = s.callTool
 		s.cfg.Voice.Version = cfg.Version
 		if s.cfg.Voice.Provider == "" {
 			s.cfg.Voice.Provider = voice.OpenAI
 		}
+	}
+
+	if cfg.Watch && !cfg.Echo {
+		s.notified = map[string]time.Time{}
+		go tools.Watch(ctx, cfg.Mac, watchEvery, func(b tools.Blocked) { s.post(func() { s.onBlocked(b) }) })
 	}
 
 	dialDone := make(chan struct{})
@@ -391,12 +405,28 @@ func (s *server) reject(msg string) {
 	s.ws.Close()
 }
 
-func (s *server) writeRaw(b []byte) {
+func (s *server) writeRaw(b []byte) { s.write(b) }
+
+// writeText sends a plaintext JSON text frame to the relay itself (protocol section 2: notify).
+func (s *server) writeText(v any) {
+	if s.ws == nil {
+		s.log.Warn("relay not connected, text frame dropped")
+		return
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err) // only maps of strings are sent
+	}
+	s.write(string(b))
+}
+
+// write sends msg as a binary ([]byte) or text (string) frame.
+func (s *server) write(msg any) {
 	if s.ws == nil {
 		return
 	}
 	s.ws.SetWriteDeadline(time.Now().Add(writeTimeout))
-	err := websocket.Message.Send(s.ws, b)
+	err := websocket.Message.Send(s.ws, msg)
 	s.ws.SetWriteDeadline(time.Time{}) // pongs are written from inside Receive; a stale deadline would fail them
 	if err != nil {
 		s.log.Warn("relay write failed, closing", "err", err)

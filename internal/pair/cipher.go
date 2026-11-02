@@ -25,6 +25,7 @@ const (
 	TypeControl   = 1
 	TypeSalt      = 2 // plaintext [02][00000000][16-byte salt]
 	TypeKeepalive = 3 // plaintext [03][00000000]
+	TypeAttach    = 4 // encrypted [4B id BE][4B index BE][data ≤ 60000 B], after an attach control
 )
 
 // SaltFrame is the plaintext type 2 frame announcing this side's session salt.

@@ -29,6 +29,7 @@ type callState struct {
 	lastFrame time.Time    // last real phone frame sent to the current session; zero until one is
 	fill      *time.Ticker // silence fill; nil in echo mode
 	muted     bool         // SetMuted(true) sent to the current session
+	hangup    *time.Timer  // non-nil once hang_up was called: the call ends at TurnDone or when it fires
 
 	rem []byte // tail shorter than one frame, held until more audio or the turn ends
 
@@ -195,6 +196,10 @@ func (s *server) handlers(sid int) voice.Handlers {
 		TurnDone: func() {
 			on(func(c *callState) {
 				s.flushAudio(c)
+				if c.hangup != nil { // the goodbye is out: now hang up
+					s.endCall("user")
+					return
+				}
 				s.setState(c, "listening")
 			})
 		},
@@ -381,6 +386,9 @@ func (s *server) endCall(reason string) {
 	s.call = nil
 	if c.fill != nil {
 		c.fill.Stop()
+	}
+	if c.hangup != nil {
+		c.hangup.Stop()
 	}
 	if c.sess != nil {
 		c.sess.Close()
