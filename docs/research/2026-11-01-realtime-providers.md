@@ -39,3 +39,16 @@
 - 音色：`zh_female_vv_uranus_bigtts`（Vivi 2.0）、`zh_female_xiaohe_uranus_bigtts`、`zh_male_m191_uranus_bigtts`（云舟）、`zh_male_taocheng_uranus_bigtts`（小天）；文档例子又用 `_jupiter_` 后缀，3.0 该用哪个未核实（错了报 `InvalidSpeaker`）。
 - 已知坑：模型可能把工具名念出来（instructions 压住）；`session.create` 可能拒收不认识的 JSON Schema 关键字；默认严格审核。
 - 出处：https://docs.volcengine.com/docs/DoubaoVoice/endtoend-realtime-voice-full-duplex-version?lang=zh 、https://docs.volcengine.com/docs/doubao-voice/access-must-read?lang=zh 、/billing-instructions 、/tone-list-3 ；第三方 https://github.com/kikilomas95-create/seeduplex-web-demo 、https://github.com/SpaceEggs/agentic-call-control/issues/2
+
+## Google Gemini Live API（2026-11-01 researcher，官方 ai.google.dev，没真跑）
+
+- 模型 `models/gemini-3.8-live`（Stable；`-extended-thinking` 只能异步工具，`thinkingLevel` low/medium/high）。端点 `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=<key>`（key 在 URL 里，**不能进日志**）。
+- 每条客户端消息恰好一个顶层键：`setup`（第一条）/ `clientContent` / `realtimeInput` / `toolResponse`。`setup {model, generationConfig:{responseModalities:["AUDIO"], speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName}}}}, systemInstruction:{parts:[{text}]}, tools:[{functionDeclarations:[{name,description,behavior,parameters}]}], realtimeInputConfig:{automaticActivityDetection:{disabled,startOfSpeechSensitivity,endOfSpeechSensitivity,prefixPaddingMs,silenceDurationMs}}, inputAudioTranscription:{}, outputAudioTranscription:{}, sessionResumption:{handle?}, contextWindowCompression:{slidingWindow:{}}}`。文档矛盾：`responseModalities` 在 get-started 示例里放 setup 顶层、API 参考放 generationConfig（真连核）。
+- 上行 `{"realtimeInput":{"audio":{"data":<b64>,"mimeType":"audio/pcm;rate=16000"}}}`（文档称可标实际采样率让服务端重采样，未实测）；文字轮 `{"clientContent":{"turns":[{role:"user",parts:[{text}]}],"turnComplete":true}}`（会打断当前生成，不用另发 response.create）；`realtimeInput.audioStreamEnd:true` 停顿 >1s 时发。
+- 服务端消息：顶层可带 `usageMetadata`、`voiceActivity`，恰好一个：`setupComplete` / `serverContent{modelTurn.parts[].inlineData.data(b64 PCM16 24k), interrupted, turnComplete, generationComplete, inputTranscription{text}, outputTranscription{text}, interactionStatus}` / `toolCall{functionCalls[{id,name,args}]}` / `toolCallCancellation{ids}` / `goAway{timeLeft}` / `sessionResumptionUpdate{newHandle,resumable}`。
+- 打断：服务端自己取消，发 `interrupted:true` + `turnComplete`，客户端只清播放；作废的工具调用由 `toolCallCancellation` 通知。无 cancel 事件。
+- 工具结果 `{"toolResponse":{"functionResponses":[{id,name,response:{...}}]}}`，不用再触发；`behavior` BLOCKING/NON_BLOCKING（3.8-live 两者都行，显式写）。
+- 会话：单连接约 10 分钟 → `goAway` → 新连接 setup 带 `sessionResumption.handle`（保存最新 `sessionResumptionUpdate.newHandle`，2 小时有效）；纯音频 15 分钟上限，开 `contextWindowCompression.slidingWindow:{}` 可突破；上下文 128k。
+- 用量 `usageMetadata{promptTokenCount, responseTokenCount, promptTokensDetails[], responseTokensDetails[]（按 modality 拆）}`。价格：音频入 $3/M（≈$0.005/分钟）、出 $12/M（≈$0.018/分钟），文本入 $0.75 / 出 $4.50；免费层可用。
+- 音色 30 个：Zephyr、Puck、Charon、Kore、Fenrir、Leda、Orus、Aoede、Callirrhoe、Autonoe、Enceladus、Iapetus、Umbriel、Algieba、Despina、Erinome、Algenib、Rasalgethi、Laomedeia、Achernar、Alnilam、Schedar、Gacrux、Pulcherrima、Achird、Zubenelgenubi、Vindemiatrix、Sadachbia、Sadaltager、Sulafat。中文 zh-Hans 在语言表，靠 systemInstruction 限定。
+- 坑：中国大陆 / 香港不在支持地区（本机在美国，不影响）；原生音频只出 AUDIO，文字靠转写；Extended Thinking 判空闲看 `interactionStatus: IDLE`。
