@@ -26,3 +26,4 @@
 - [ ] 市场盘点页 /_r/7c04be05a07119c87544ad435850fff5/ 列的下一批候选：Gemini 3.8 Live、Grok Voice 3.0、StepAudio 3 Realtime（限免）；等用户定。
 - [ ] `report-publish` 在本机会先撞系统 openrsync（不认 --chmod）：脚本在 claude-stack 仓，建议改成 /opt/homebrew/bin/rsync，等用户点头。
 - [ ] iOS 设计稿 B、C 两版代码在定稿实现时删除，截图保留在 docs/design-specs/ios-liquid-glass/。
+- [ ] 局域网直连 + 中继兜底（用户 2026-11-01 问「别人用是不是都走我的中继」）：Mac 在 LAN 监听、二维码同时带 LAN 地址，手机先直连再回退中继；在家不经中继。要用户点头再做。

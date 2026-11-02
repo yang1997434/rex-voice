@@ -93,6 +93,16 @@ Mac 上跑的是后台服务 `rex-voiced`。手机和 Mac 之间经一台中继�
 
 改完运行 `launchctl kickstart -k gui/$(id -u)/com.maruiao.rex-voiced` 让服务重读。
 
+## 自己架中继（可选）
+
+默认二维码里写的中继是 `wss://r.maruiao.top/_voice/ws`，由项目维护者提供：它只转发密文，看不到内容，但走的是他的带宽。想自己架一个：
+
+1. 任意一台有公网地址、装了 nginx 和 HTTPS 证书的 Linux。
+2. 编译：`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o rex-voice-relay ./cmd/rex-voice-relay`，放到 `/opt/rex-voice/`。
+3. systemd 用 `scripts/rex-voice-relay.service`（只听 `127.0.0.1:8790`）；nginx 在你的 server 块里 `include` 一份 `scripts/nginx-voice.conf`。
+4. 配对时指定它：`rex-voiced pair -relay wss://你的域名/_voice/ws`，地址会写进二维码和 `config.json`，手机和 Mac 都改走它。
+5. 验证：`curl -A rex-voice-check https://你的域名/_voice/healthz` 返回 `ok`。
+
 ## 卸载
 
 ```sh
