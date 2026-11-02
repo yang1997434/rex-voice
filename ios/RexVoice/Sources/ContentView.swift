@@ -1,10 +1,10 @@
 import AVFoundation
 import SwiftUI
 
-/// Main screen (design H, final 2026-11-02): the persona in one thick card (lit edge, inner glow, grain,
-/// state-colored light), status, transcript and attachments below it, and a rail on the right with the provider
-/// logos plus pairing / settings. On the Duo outer screen the rail lives in the status-bar column; settings is a
-/// page of the same cards.
+/// Main screen. Narrow screens (design J, final 2026-11-02): idle is the big persona card (lit edge, inner glow,
+/// grain, state-colored light), a status line and the call button; in a call the card shrinks to a banner over the
+/// dialog. Landscape / Duo unfolded keep design H's two columns. A rail on the right holds the current provider's logo
+/// (hold it for the wheel) plus pairing / settings; on the Duo outer screen it lives in the status-bar column.
 struct ContentView: View {
     @Environment(CallController.self) private var controller
     @Environment(AppSettings.self) private var settings
@@ -21,6 +21,8 @@ struct ContentView: View {
     @State private var infoHeight: CGFloat = .infinity
     /// That part is taller than its room and scrolls; only then is it clipped (card shadows cut at its edges).
     @State private var infoScrolls = false
+    /// Provider wheel fanned out; taps elsewhere on the content close it.
+    @State private var wheelOpen = false
 
     enum Sheet: String, Identifiable {
         case settings, pair
@@ -29,6 +31,10 @@ struct ContentView: View {
 
     init(initialSheet: Sheet? = nil) {
         _sheet = State(initialValue: initialSheet)
+        #if DEBUG
+        // `REXVOICE_WHEEL=open`: start with the provider wheel fanned out (screenshots).
+        _wheelOpen = State(initialValue: ProcessInfo.processInfo.environment["REXVOICE_WHEEL"] == "open")
+        #endif
     }
 
     var body: some View {
@@ -45,11 +51,11 @@ struct ContentView: View {
             let topGap = max(0, 14 - geo.safeAreaInsets.top)
             ZStack {
                 HStack(spacing: 12) {
-                    if wide {
-                        twoColumns(phase, state: state, mood: mood)
-                    } else {
-                        stackedColumn(phase, state: state, mood: mood, height: geo.size.height,
-                                      screen: geo.size.height + geo.safeAreaInsets.top + geo.safeAreaInsets.bottom)
+                    Group {
+                        if wide { twoColumns(phase, state: state, mood: mood) } else { dialogJ(phase, state: state, mood: mood) }
+                    }
+                    .overlay {
+                        if wheelOpen { Color.clear.contentShape(.rect).onTapGesture { wheelOpen = false } }
                     }
                     if !column { sideRail.frame(maxHeight: .infinity, alignment: .bottom) }
                 }
@@ -133,20 +139,75 @@ struct ContentView: View {
         }
     }
 
-    /// Narrow screens: the card at 0.53 of the usable height; when status, transcript and attachments do not fit
-    /// under it the card gives way down to 0.42 of the whole screen, then that part scrolls. The call button stays
-    /// at the bottom.
-    private func stackedColumn(_ phase: CallPhase, state: PersonaState, mood: Mood, height: CGFloat,
-                               screen: CGFloat) -> some View {
+    /// Narrow screens (design J): idle is the big card, one status line and the button. In a call the card shrinks to an 88pt banner
+    /// and the dialog takes the middle; a hang-up goes back to idle (the dialog is kept until the next call clears it).
+    private func dialogJ(_ phase: CallPhase, state: PersonaState, mood: Mood) -> some View {
         VStack(spacing: 14) {
-            VStack(spacing: 14) {
+            if phase.inCall {
+                callBanner(phase, state: state, mood: mood)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                dialog(mood).transition(.opacity)
+            } else {
                 personaCard(phase, state: state, mood: mood)
-                    .frame(minHeight: min(screen * 0.42, height * 0.53), maxHeight: height * 0.53)
-                infoSection(phase, mood: mood).layoutPriority(1)
+                    .frame(maxHeight: .infinity)
+                    .transition(.opacity)
+                statusRow(phase, mood: mood)
             }
-            .frame(maxHeight: .infinity, alignment: .top)
             callButton(phase)
         }
+        .animation(reduceMotion ? .easeInOut(duration: 0.3) : .smooth(duration: 0.45), value: phase.inCall)
+    }
+
+    /// J's in-call dialog; notices float over its top.
+    private func dialog(_ mood: Mood) -> some View {
+        DialogList(lines: controller.transcript, attachments: controller.attachments, accent: mood.accent) { zoomed = $0 }
+            .frame(maxHeight: .infinity)
+            .overlay(alignment: .top) {
+                if let notice = controller.notice {
+                    NoticePill(text: notice) { controller.notice = nil }.padding(.top, 8)
+                }
+            }
+    }
+
+    /// J's in-call header: the persona in a 56pt disc, state + hint, the timer, in the big card's light.
+    private func callBanner(_ phase: CallPhase, state: PersonaState, mood: Mood) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+        let dark = scheme == .dark
+        return HStack(spacing: 14) {
+            ZStack {
+                RadialGradient(colors: [mood.glow.opacity(0.9), mood.bottom], center: .center, startRadius: 2, endRadius: 34)
+                PersonaView(persona: settings.persona, state: state).padding(.top, 8)
+            }
+            .frame(width: 56, height: 56)
+            .clipShape(.circle)
+            .overlay(Circle().strokeBorder(.white.opacity(dark ? 0.25 : 0.8), lineWidth: 1))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(phase.label).font(.headline).contentTransition(.opacity)
+                    if phase.live { WaveBars(live: true, count: 4, height: 14).foregroundStyle(mood.accent) }
+                }
+                Text(phase.hint).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                Text(elapsed(since: callStart, now: ctx.date))
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: 28)
+                    .background(Capsule().fill(chipFill))
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 88)
+        .background {
+            LinearGradient(colors: [mood.top, mood.bottom], startPoint: .leading, endPoint: .trailing)
+            GrainOverlay(opacity: 0.1)
+        }
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(LinearGradient(colors: [.white.opacity(dark ? 0.35 : 0.9), .white.opacity(dark ? 0.04 : 0.2)],
+                                                   startPoint: .top, endPoint: .bottom), lineWidth: 1))
+        .shadow(color: mood.glow.opacity(dark ? 0.25 : 0.35), radius: 20, y: 8)
+        .accessibilityElement(children: .combine)
     }
 
     /// Status, transcript and attachments, scrolling only when they do not fit. Unclipped while they fit so the card
@@ -172,11 +233,10 @@ struct ContentView: View {
         .padding(.vertical, -4)
     }
 
-    /// 56pt rail, bottom-aligned: provider logos, then pairing and settings at the bottom.
+    /// 56pt rail, bottom-aligned: the current provider's logo and name (hold for the wheel), then pairing and settings.
     private var sideRail: some View {
         VStack(spacing: 8) {
-            ProviderPicker(axis: .vertical, cell: 48)
-                .padding(.bottom, 4) // 12pt to the buttons with the stack's 8
+            ProviderWheel(open: $wheelOpen, cell: 48)
             V2IconButton(title: "配对", symbol: "qrcode.viewfinder") { sheet = .pair }
             V2IconButton(title: "设置", symbol: "slider.horizontal.3") { sheet = .settings }
         }
@@ -185,9 +245,11 @@ struct ContentView: View {
         .background(CardSurface(radius: 28).opacity(0.92))
     }
 
+    private var pageColor: Color { scheme == .dark ? Color(white: 0.04) : Color(white: 0.95) }
+
     private var pageBackground: some View {
         ZStack {
-            scheme == .dark ? Color(white: 0.04) : Color(white: 0.95)
+            pageColor
             GrainOverlay(opacity: 0.05)
         }
         .ignoresSafeArea()

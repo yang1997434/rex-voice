@@ -205,7 +205,7 @@ struct VoiceOption: Identifiable, Hashable {
 }
 
 enum VoiceProvider: String, CaseIterable, Identifiable {
-    case openai, qwen, gemini, grok
+    case grok, qwen, openai, gemini // display order (settings grid, wheel); only the raw value is stored
     var id: String { rawValue }
 
     var title: String {
@@ -217,13 +217,13 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Letter on the brand-colored block (no logo art in the app).
-    var mark: String {
+    /// Short name under the rail logo and the wheel's VoiceOver label.
+    var shortName: String {
         switch self {
-        case .openai: "O"
-        case .qwen: "Q"
-        case .gemini: "G"
-        case .grok: "X"
+        case .openai: "GPT"
+        case .qwen: "千问"
+        case .gemini: "Gemini"
+        case .grok: "Grok"
         }
     }
 

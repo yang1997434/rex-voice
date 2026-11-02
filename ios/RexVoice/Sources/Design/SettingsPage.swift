@@ -242,7 +242,7 @@ struct SettingsPage: View {
                 ForEach(VoiceProvider.allCases) { p in
                     Button { settings.provider = p } label: {
                         HStack(spacing: 8) {
-                            BrandMark(provider: p)
+                            ProviderLogo(provider: p, size: 24)
                             Text(p.title).font(.subheadline.weight(.medium)).lineLimit(1)
                             Spacer(minLength: 0)
                         }
