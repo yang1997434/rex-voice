@@ -55,3 +55,13 @@
 - [ ] iOS：aps-environment 写死 production，Debug 装真机可能和开发描述文件冲突（TestFlight 不受影响）；横屏 / Duo 展开时附件卡片布局没真机看；push_token 只在 WebSocket 建立时发、不随 present 重发。
 - [ ] 推送标题 / 正文没限长，超 4 KB 会被 APNs 413（现在正文截 100 字，实际到不了）。
 - [ ] `docs/plan-2026-11-01.md` 没更新本批内容，以 CLAUDE.md 和 protocol.md 为准。
+
+## 2026-11-02 0.3.1（真机反馈第二轮）
+- [已做] 千问「说发了没发」：四家文字 / 语音（fakephone 多轮 + 插话）都能调工具，用户再打一通也正常；加了每次工具调用和每句转录的 Mac 日志，再出现看日志定位。
+- [已做] 复述规则改成只对 Claude 窗格和敏感词复述，shell 普通命令直接发。
+- [已做] 工具返回去噪（list_panes 不带命令原文；read_claude 只给结论，verbose 才给原文）；call.start / voice.preview 可带称呼；Mac config name 改 LeBron。
+- [已做] iOS 0.3.1：H 版右侧安全区竖栏定稿（设计稿 F / G / H 见 docs/design-specs/ios-v3-sidebar/，挑选页 /_r/94a219555e3b57acd113652e290bfa6e/）；称呼设置；掉线误报；音色锁定；形象卡最小高度。
+- [ ] 真机验收 CLAUDE.md 清单 21–24；竖栏顶写死在屏高 45%，来电 / 录音指示条会不会盖到要真机看。
+- [ ] 供应商 logo 现在是自绘占位（品牌色圆底 + 白字形）；用户给官方素材后换 ProviderLogo.glyph。
+- [ ] read_claude 去噪的听感（「代码」「某文件」「链接」替换词）要用户真机用几天再调。
+- [ ] 测试会话 voicetest-sess（窗格 voicetest）还开着，给语音测试用；不用了 `rex session kill`。
