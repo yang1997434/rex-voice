@@ -11,6 +11,10 @@ func TestCost(t *testing.T) {
 	if usd, ok := cost(u); !ok || math.Abs(usd-24/7.2) > 1e-9 {
 		t.Errorf("cost = %v, %v", usd, ok)
 	}
+	u.Model = "qwen-audio-3.1-realtime-plus" // USD price, no conversion: 6.4 + 0.8 + 24 + 6.4
+	if usd, ok := cost(u); !ok || math.Abs(usd-37.6) > 1e-9 {
+		t.Errorf("audio-3.1 cost = %v, %v", usd, ok)
+	}
 	u.Model = "qwen-unknown"
 	if usd, ok := cost(u); ok || usd != 0 {
 		t.Errorf("unpriced model: cost = %v, %v", usd, ok)

@@ -20,7 +20,7 @@
 
 ## 2026-11-01 第二批（提供方接口、Qwen、豆包、设计稿、市场调研）收口追加
 - [x] 已做（豆包 2026-11-01 用户定移除，代码已删，调研留档）豆包 3.0 真跑：等用户 `secret-add DOUBAO_API_KEY` 后跑 `DOUBAO_API_KEY=$(flow-cred DOUBAO_API_KEY) go test -tags manual -run Manual -v ./internal/voice/doubao`，核 4 处猜的字段（采样率键名 rate/sample_rate、usage 拆分、音色后缀 uranus/jupiter、是否要 response.create）。
-- [ ] Qwen：新端点（带 WorkspaceId）没真跑（国际站端点 11-01 已真跑，见 protocol §4.2）；audio-3.1 的 `smart_turn` 与 `smart_turn_v2` 差别、价格没查；被打断的回复全文仍进 RecentTurns（和 OpenAI 一样）；语音模式回复进行中 SendText 的报错行为未核实。
+- [ ] Qwen：新端点（带 WorkspaceId）没真跑（国际站端点 11-01 已真跑，见 protocol §4.2）；audio-3.1 的 `smart_turn` 与 `smart_turn_v2` 差别没查、flash 档价格没录（plus 已录 prices.go）；被打断的回复全文仍进 RecentTurns（和 OpenAI 一样）；语音模式回复进行中 SendText 的报错行为未核实。
 - [ ] 豆包不支持文字输入：`rex-voiced chat -provider doubao` 不可用；空闲提示改为手机显示文字（34c6f02）。
 - [ ] 四家语音 A/B（OpenAI / Qwen 3.8 与 audio-3.1 / Gemini / Grok）等 iOS 定稿实现上 TestFlight 后跑，20 句中文指令，记 docs/releases.md。
 - [ ] 市场盘点页 /_r/7c04be05a07119c87544ad435850fff5/ 列的下一批候选：Gemini 3.8 Live、Grok Voice 3.0、StepAudio 3 Realtime（限免）；等用户定。

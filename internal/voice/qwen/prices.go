@@ -3,10 +3,15 @@ package qwen
 // CNY per 1M tokens, 北京地域（https://help.aliyun.com/zh/model-studio/model-pricing ，
 // 2026-11-01 调研 docs/research/2026-11-01-realtime-providers.md），上线前对照官网核。
 // 音频和文本输出分开计费；100 万 token 免费额度不在这里扣。
-type price struct{ AudioIn, AudioOut, TextIn, TextOut float64 }
+type price struct {
+	AudioIn, AudioOut, TextIn, TextOut float64
+	USD                                bool // price is already in USD (international site), no CNY conversion
+}
 
 var prices = map[string]price{
 	"qwen3.8-omni-flash-realtime": {AudioIn: 6, AudioOut: 12, TextIn: 1.5, TextOut: 4.5},
+	// 国际站（新加坡）美元价，官网 2026-11-01 核：https://www.alibabacloud.com/help/en/model-studio/qwen-audio-3-1-realtime-plus
+	"qwen-audio-3.1-realtime-plus": {AudioIn: 6.4, AudioOut: 24, TextIn: 0.8, TextOut: 6.4, USD: true},
 }
 
 const cnyPerUSD = 7.2 // 元 → 美元，固定汇率，usage.log 统一记美元
@@ -17,6 +22,9 @@ func cost(u usage) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	cny := float64(u.AudioIn)*p.AudioIn + float64(u.TextIn)*p.TextIn + float64(u.AudioOut)*p.AudioOut + float64(u.TextOut)*p.TextOut
-	return cny / 1e6 / cnyPerUSD, true
+	sum := float64(u.AudioIn)*p.AudioIn + float64(u.TextIn)*p.TextIn + float64(u.AudioOut)*p.AudioOut + float64(u.TextOut)*p.TextOut
+	if !p.USD {
+		sum /= cnyPerUSD
+	}
+	return sum / 1e6, true
 }
