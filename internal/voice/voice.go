@@ -76,7 +76,7 @@ var ErrUnknownProvider = errors.New("voice: unknown provider")
 
 var defaults = map[Provider][2]string{
 	OpenAI: {"gpt-realtime-2.1", "marin"},
-	Qwen:   {"qwen3.8-omni-flash-realtime", "Tina"},
+	Qwen:   {"qwen-audio-3.1-realtime-plus", "longanqian"}, // 用户 2026-11-01 定；3.8 要手选、音色 Tina
 	Gemini: {"gemini-3.8-live", "Kore"},
 	Grok:   {"grok-voice-3.0", "Ara"},
 }
