@@ -32,3 +32,5 @@
 - [ ] 第三方参考图（aigengtu 三视图、ZipZipPipe 插画、moegirl 快照）只在本机 `docs/design-specs/personas/_refs/`，已 gitignore；换机器要重新按各 `source.md` 下载。
 - [ ] Qwen 国际站默认：国内网络下 audio-3.1-plus 首包延迟没量；A/B 时和 3.8（北京）对比记 docs/releases.md。
 - [ ] 音色试听（`voice.preview`，Mac 端 2026-11-02 做完）：OpenAI、Qwen 国际站真跑过（`go test -tags manual -run TestPreviewReal ./internal/call/`）；Gemini、Grok 没真跑。Grok 语音模式下 `SendText` 是否直接出音频没核（每条 `conversation.item.create` 另收 $0.004，外加连接分钟），上 Grok 试听前先真跑一次。
+- [ ] iPhone Duo 内屏 / 横屏没有真实截图：Device Hub 只能 GUI 操作，osascript 被辅助功能权限挡住（2026-11-02）。要么用户给终端开「辅助功能」+「自动化」权限后补拍，要么以用户真机（0.2.1）验收清单第 13 条为准。
+- [ ] 配对页横屏时扫描框和底部引导卡片只差约 1pt（coder 2026-11-02 报），真机横屏看一眼。
