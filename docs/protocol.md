@@ -10,6 +10,7 @@
 
 - `GET /_voice/ws?role=mac|phone&id=<id>`，升级成 WebSocket。中继按 `id` 配对两端：一端连上等另一端，都在就双向透传二进制帧；任一端断，另一端收到 `present:false`、连接保持。同一 `id` 同一 role 只允许一条连接，新连顶掉旧连（旧连被关，对端不收 `present:false`）。`role` 只能是 `mac` / `phone`，`id` 只许 `[A-Za-z0-9_-]{8,64}`，否则 400 不升级；不校验 `Origin`。单帧上限 64 KiB，超了断那条连接；中继每次写有 10 s 超时，写不出去就关那一端。客户端发来的文本帧中继忽略。
 - 中继不解密、不存。`GET /_voice/healthz` → `ok`。
+- **Mac→中继文本帧 `notify`**（2026-11-02）：没有通话时，Mac 发现某个 Claude 窗格变成 `blocked`，就往中继发一个**明文文本帧** `{"t":"notify","title":"<项目> 的 Claude 在等你","body":"<问题前 100 字>"}`，由中继转成 APNs 推送（中继侧另做；现在的中继照上面「客户端文本帧忽略」丢掉它）。因为走明文，正文只放项目名和问题前 100 字，不放全文、不放 key。同一窗格 10 分钟内最多一条；窗格离开 `blocked` 前不重复触发；Mac 没连上中继时这条直接丢、记日志。监视只在 Mac（每 5 秒查一次 Rex，`internal/tools/watch.go`），手机不轮询。
 - 两端之间只走**二进制帧**（第 3 节的加密帧）；中继自己只发**文本帧**，内容 `{"t":"peer","present":true|false}`，对端上线 / 掉线时发给另一端，连上时也立即发一次当前状态。没有对端时收到的二进制帧直接丢。
 - 保活：每端空闲时每 30 秒发一个**明文** `type 3` 帧 `[03][00000000]`（没有对端时中继丢掉，有对端时对端忽略），用来刷新 nginx `proxy_send_timeout` 并尽早发现死连接；中继→客户端方向没有保活，nginx `proxy_read_timeout 3600s` 到了会断，客户端按 1s→30s 退避重连即可（通话中双向都有音频，不会触发）。
 - r.maruiao.top 的 server 块对空 UA 和 `go-http` / `curl` 等 UA 一律 403，WebSocket 客户端和健康检查都要带自定义 `User-Agent`（`rex-voiced/<版本>`、`RexVoice-iOS/<版本>`，健康检查 `curl -A rex-voice-check`）。
@@ -27,6 +28,8 @@
 - `type 1` 控制：JSON。
   - 手机→Mac：`{"t":"hello","app":"<版本>","device":"<机型>","device_id":"<app 首次启动生成的随机 UUID，存 Keychain>"}`（每次连上、盐交换完先发）、`{"t":"call.start","provider":"openai|qwen|gemini|grok","model":"…","voice":"…","api_key":"…"}`（四个字段都可选，2026-11-01 用户定「手机管 key、选双工模型」：手机把设置页里的供应商 / 模型 / 音色 / 该家的 key 随 `call.start` 发来，Mac 只放内存、本次通话用完即丢，不落盘、不进任何日志和审计；没带的字段用 Mac `config.json` 的默认，`api_key` 没带时才用 Mac 钥匙串里的兜底 key；不认识的 `provider` 回 `error` 并保持 `ended`）、`{"t":"call.end"}`、`{"t":"voice.preview","provider":"…","model":"…","voice":"…","api_key":"…"}`（音色试听，2026-11-02 用户定；四个字段和 `call.start` 同义。Mac 起一个几秒的短会话让模型说一句「你好，我是你的语音助手…」，音频走 type 0 帧；只在没有通话时可用，通话中回 `preview error`；试听中再来一个就停掉旧的、不发旧的 `done`；试听中来 `call.start` 先回 `preview error msg=已取消` 再开始通话；`call.end` 不影响试听；手机断开就直接关会话；整段 20 秒超时）。一次性配对靠 `device_id`：Mac 第一次收到能解密的 hello 时把它记进 `pair.json`，之后 `device_id` 不同的 hello 一律回 `error` 并断开，要换手机重新 `pair`。
   - Mac→手机：`{"t":"status","state":"connecting|listening|thinking|speaking|ended"}`（`detail` 可选，Mac 目前不发，手机按可选解）、`{"t":"transcript","who":"user|assistant","text":"…"}`、`{"t":"interrupt"}`（立即停播、清空播放队列）、`{"t":"hang_up","reason":"user|idle|error"}`、`{"t":"error","msg":"…"}`、`{"t":"preview","state":"connecting|playing|done|error","msg":"…"}`（`voice.preview` 的进度：收到请求立刻 `connecting`，第一帧试听音频前 `playing`，这句说完、音频全部发完后 `done`；任何失败 `error` 带 `msg`（不含 key），含「通话中不能试听」「已取消」「超时」和连不上供应商；模型这轮一点声音都没出也算 `error`）
+  - Mac→手机（2026-11-02 加，发图发链接）：`{"t":"attach","id":<整数>,"name":"<原文件名>","mime":"image/jpeg","size":<字节数>,"chunks":<分片数>}`（`show_file`：先发这条，紧接着发全部 `type 4` 分片）、`{"t":"link","url":"http(s)://…","title":"…"}`（`show_link`；`title` 可能是空串）。
+- `type 4` 附件分片（2026-11-02 加）：加密，规则同 type 0/1（同一 seq 序列、附加数据 = type 字节）。明文 `[4B id BE][4B index BE][data]`，`id` 对应 `attach` 的 `id`，`index` 从 0 起，`data` ≤ 60000 字节（加头和 tag 后仍在中继 64 KiB 上限内）；按顺序发完 `chunks` 片，拼起来就是 `size` 字节的 JPEG。
 
 ### 测试向量
 
@@ -95,7 +98,9 @@ Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.
 | `list_claude` | — | `[{pid, project, cwd, started, name, status, session?:{title,last_active}}]` | `ps -ax -o pid=,lstart=,command=` 过滤命令首词是 `claude` 的进程（排除 `claude-*` 和 `.app/`），`started` 是 `lstart` 原文；`cwd`、`name`、`status` 优先取 `~/.claude/sessions/<pid>.json`，没有就 `lsof -a -p <pid> -d cwd -Fn`、`name` 空、`status:"unknown"`；拿不到 cwd 的进程不列。`status` 只取 busy / idle / blocked，其余记 `unknown`。`session` 取法同 `read_claude`（取 1 份），没有记录就不带这个字段。转录目录 `~/.claude/projects/<cwd 把非字母数字换成 ->/`。 |
 | `read_claude` | `pid` 或 `block` | `[{title, last_active, last_user, claude_recent[≤2], status, session_name}]`（精确命中 1 个，退回猜测时最多 2 个，新的在前） | 转录 JSONL：`type=user` 且非 `isMeta`、正文不以 `<` 开头的算用户指令（截 500 字）；`type=assistant` 取 `message.content[].text`（每段截 1500 字，按时间先后）；标题取最后一条 `aiTitle`（实测在 `type:"ai-title"` 行），整份没有就取第一条用户指令前 60 字；`last_active` 是文件 mtime。**从文件末尾按 64 KiB 倒读**，攒够标题、1 条用户指令、2 段 assistant 就停，不整读。精确对应：读 `~/.claude/sessions/<pid>.json`（Claude Code 自己写的，字段 `sessionId`、`cwd`、`name`、`status` busy/idle…、`version`；格式没承诺，缺字段就走退回办法，不报错），转录就是 `~/.claude/projects/<cwd 转义>/<sessionId>.jsonl`，命中就用、不看多久没动；文件不存在或没有 `sessionId` 时退回按目录 mtime 两小时内最近两份；都没有返回 `两小时内没有活动的会话记录`。`status` = sessions 文件的 `status`，再叠加 Rex `program_status` 的 `state`：窗格 `blocked` 优先；sessions 文件没有状态时 `working`→busy、`done`/`idle`→idle；都没有为 `unknown`。传 `block` 时用该窗格的 `owner.pid`；只传 `pid` 时遍历窗格找同 pid 的那个取 state（找不到就不叠加，Claude 可能不在 Rex 里）。`session_name` = sessions 文件的 `name`。（11-01 验证：`lsof` 看不到转录文件，Claude 是开-追加-关，方案里的 lsof 做法作废。） |
 | `send_to_pane` | `block`, `text` | `{sent}` 或 `{refused}`（审计写失败时多一个 `audit_error`） | 先过禁发正则（`生产\|部署\|上线\|发布\|回滚\|迁移\|deploy\|rm -rf\|git push\|sudo`，不区分大小写），命中返回 `{"refused":"这类指令不能用语音发，请用户回 Mac 手打"}`；否则 `rex send -s <sid> -b <bid> -- <text>`（带 `--`，防 text 以 `-` 开头被当成参数）+ `rex send-key -s <sid> -b <bid> enter`。发出和被拒都往审计流写一行 JSON `{time, tool, block, text, result:"sent" 或 "refused"}`。空 text 报错。提示词要求模型先逐字复述、用户确认后才调。 |
-| `hang_up` | `reason?` | `{ok}` | 由会话层用 `tools.HangUpDef(run)` 注册（第 2b 步）：Mac 给手机发 `hang_up`，关 OpenAI 会话。提示词：听到「挂断吧 / 先这样 / 拜拜 / 不聊了」先说一句告别再调。 |
+| `hang_up` | `reason?` | `{ok}` | 由会话层用 `tools.HangUpDef(run)` 注册（第 2b 步）：只记下「要挂」，等模型这轮说完（`TurnDone`）再给手机发 `hang_up`、关会话，见第 6 节。提示词：听到「挂断吧 / 先这样 / 拜拜 / 不聊了」先说一句告别再调。 |
+| `show_file` | `path` | `{sent, size, chunks}` | `internal/tools/show.go` 校验 + 转换，发送由会话层注册：展开 `~`，只收 `.png/.jpg/.jpeg/.heic/.webp` 且 ≤ 20 MB；`sips -Z 1280 -s format jpeg <src> --out <临时文件>`（用完删），结果 > 2 MB 报错；没有通话报「没有通话」；按第 3 节发 `attach` + `type 4` 分片。 |
+| `show_link` | `url`, `title?` | `{sent}` | 只收 http / https（要有主机名）；没有通话报「没有通话」；发 `link` 控制帧。 |
 
 出错一律返回 `{"error":"…"}`（不超过 300 字），不让会话层报错：未知工具、参数不是 JSON 对象或带未定义字段、外部命令失败（取它 stderr）、工具内部 panic 都走这条，模型能看到原因。
 
@@ -106,3 +111,4 @@ Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.
 - app：能量门限（RMS 低于阈值的 20 ms 帧不发，阈值真机调），有声后再多发 300 ms（15 帧）防吞字尾；不发 `idle` 状态帧（Mac 自己按收帧计时）。
 - Mac 补静音（11-01 真跑发现：手机停发后服务端 VAD 判不出用户说完）：通话中每 20 ms 检查，距上一个真实音频帧超过 200 ms（小于这个间隔算中继抖动，不插零）且不超过 5 s 时，往 OpenAI 追加 960 字节全零 PCM；超过 5 s 停止补（长静音不计费）。静音计时只看真实帧。
 - Mac：60 秒没收到音频 → 让模型说一句「还在吗？没事我先挂了」；90 秒 → `hang_up reason=idle`。
+- 挂断延后（2026-11-02）：模型调 `hang_up` 时 Mac 不立刻挂，等这轮回答结束（`TurnDone`，Grok 要等到 `output_audio.done`）、把剩下不足一帧的音频也发完，再发 `hang_up reason=user`；8 秒内没等到 `TurnDone` 也挂，免得道别被截断或一直挂不掉。

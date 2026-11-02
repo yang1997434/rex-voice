@@ -78,6 +78,7 @@ func serve(args []string) int {
 		RelayURL:    *relay,
 		Tools:       reg,
 		Echo:        *echo,
+		Watch:       true, // tell the user when a Claude pane turns blocked; off with -echo
 		Logger:      log,
 		Version:     version,
 	}
