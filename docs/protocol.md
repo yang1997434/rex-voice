@@ -54,6 +54,17 @@ Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.
 - 省钱：一个 `response.done` 里没有工具调用、也没有工具批次还在跑，就算答完；这时把这条回答链上所有 `function_call` 和 `function_call_output` 条目用 `conversation.item.delete {item_id}` 删掉（服务端回 `conversation.item.deleted`，11-01 真跑确认）。`function_call` 的 id 取 `response.output_item.done` 的 `item.id`；`function_call_output` 的 id 由 Mac 自己在 create 时指定（`rv_out_<n>`），不靠回包——GA 版服务端回的是 `conversation.item.added` / `conversation.item.done`，没有 `conversation.item.created`。delete 带 `event_id: rv_del_<n>`，回来的 `error` 若 `event_id` 是这个前缀就忽略（删不存在的 item）。`KeepToolOutputs` 可关掉裁剪做 A/B。副作用（11-01 实测）：删掉后模型下一问要重新调 `list_panes`。会话上限 60 分钟，55 分钟时新建会话并把最近 5 轮文字当 `instructions` 附带过去（`Session.Age()` / `RecentTurns(n)`，由会话层做）。
 - 用量：每个 `response.done` 的 `usage`（`input_tokens`、`output_tokens`、`input_token_details.{cached_tokens,audio_tokens,text_tokens,cached_tokens_details}`、`output_token_details.{audio_tokens,text_tokens}`）按 `internal/voice/openai/prices.go` 的单价折算（cached 按输入价的 1/10），一行 JSON `{time, model, input, cached, cached_audio, audio_in, text_in, output, audio_out, text_out, usd}` 写进 `~/Library/Logs/rex-voice/usage.log`；不在单价表里的模型 `usd:0` 并带 `unpriced:true`。
 
+### 4.3 字节豆包 Realtime 3.0（Seeduplex，WebSocket）
+
+- `wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue`（`Extra["url"]` 可覆盖），头 `X-Api-Key: <key>`、`User-Agent: rex-voiced/<version>`。连上发 `session.create {session:{model（默认 "1.2.6.1"）, instructions, tools（扁平，同 OpenAI）, audio:{input:{format:{type:"pcm", rate:16000}}, output:{format:{type:"pcm_s16le", rate:24000}, voice（默认 zh_female_vv_uranus_bigtts）}}}, extension:{asr:{}, tts:{}, dialog:{}}}`，等 `session.created`（记 `session.id`）才算接通，10 秒超时；回 `error` 即失败。实现在 `internal/voice/doubao`。输出格式必须写 `pcm_s16le`（`pcm` 是 float32，不写是 ogg_opus）。
+- 上行：24k 经 `voice.Downsampler` 转 16k，每帧一条 `input_audio_buffer.append {audio: base64}`，跟着会话层的 20 ms 节奏直接发（服务端要求实时节奏）。`SetMuted(true/false)` 在状态变化时发 `input_audio_mute.commit` / `input_audio_unmute.commit`；静音期间会话层补的静音帧不发。
+- 下行：`response.output_audio.delta`（base64 PCM16 24k）→ 播放；`response.output_text.delta/.done {text}` → 回答文字；`conversation.item.input_audio_transcription.completed {text}` → 用户文字。
+- 打断：`conversation.item.input_audio_transcription.started` 当「用户开口」；这时还在出声就发 `response.cancel`，并丢掉迟到的音频，直到下一条 `response.output_audio.started`。服务端通常自己先结束（发一个空的 `response.done`），这种情况不再发 cancel；cancel 之后回来的那条 `error` 只记日志。
+- 工具：`response.function_call_arguments.done {items:[{call_id, name, arguments}]}` → 并行执行（每个 20 秒超时）→ **一条** `conversation.item.create {items:[{call_id, role:"tool", content:[{type:"input_text", text}]}]}` 全部送回，模型自己接着答，不发 `response.create`。
+- 结束一轮：`response.done` 里没有工具批次在跑 → `TurnDone`。用量取 `response.usage`（`input_tokens` / `output_tokens`；音频和文本的拆分字段 `input_token_details` / `output_token_details` 未核实，没有拆分就记 `unpriced:true`）；单价在 `prices.go`（元/百万 token，按 7.2 折美元，是否覆盖 3.0 未核实），usage 行的 `model` 写 `doubao/<model>`。
+- 关闭：发 `session.close`，等 `session.closed`（最多 3 秒）再断开；关闭过程中收到的 `error` 只记日志。其余 `error` 报给会话层并结束会话。`MaxAge` = 0（闲置 10 分钟服务端会断，交给会话层的空闲挂断）。
+- 不支持文字输入：`SendText` 返回 `doubao.ErrNoTextInput`（单独的 user 文本条目服务端不回应），所以 `rex-voiced chat` 和 60 秒空闲提示在豆包上不可用。
+
 ## 5. 工具（移植自 `~/data/claude/voice-probe/tools.mjs`，已在实验里验证）
 
 | 工具 | 参数 | 返回 | 实现要点 |
