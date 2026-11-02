@@ -200,7 +200,8 @@ func TestSetup(t *testing.T) {
 		t.Errorf("setup has extra keys: %s", js(setup))
 	}
 	_, setup = f.dial(t, voice.Config{TextOnly: true, Voice: "Puck"})
-	if got := js(setup["generationConfig"]); got != `{"responseModalities":["TEXT"]}` {
+	// gemini-3.8-live rejects TEXT (11-01): text mode still asks for AUDIO and reads the output transcription
+	if got := js(setup["generationConfig"]); got != `{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Puck"}}}}` {
 		t.Errorf("text-only generationConfig = %s", got)
 	}
 	for _, k := range []string{"tools", "inputAudioTranscription", "systemInstruction"} {

@@ -160,11 +160,11 @@ func (s *Session) setup(ctx context.Context, ws *websocket.Conn, handle string) 
 }
 
 func (s *Session) setupMsg(handle string) map[string]any {
-	gen := map[string]any{"responseModalities": []string{"AUDIO"}} // 11-01 实测：放 setup 顶层会被拒
-	if s.cfg.TextOnly {
-		gen["responseModalities"] = []string{"TEXT"} // gemini-3.8-live rejects this on the first turn (11-01)
-	} else {
-		gen["speechConfig"] = map[string]any{"voiceConfig": map[string]any{"prebuiltVoiceConfig": map[string]any{"voiceName": s.cfg.Voice}}}
+	// 11-01 实测：responseModalities 放 setup 顶层会被拒；gemini-3.8-live 拒绝 TEXT，所以文字模式
+	// （rex-voiced chat）也要 AUDIO，文字从 outputTranscription 来、音频因 AudioDelta 为 nil 直接丢，按音频价计费。
+	gen := map[string]any{
+		"responseModalities": []string{"AUDIO"},
+		"speechConfig":       map[string]any{"voiceConfig": map[string]any{"prebuiltVoiceConfig": map[string]any{"voiceName": s.cfg.Voice}}},
 	}
 	resume := map[string]any{}
 	if handle != "" {
