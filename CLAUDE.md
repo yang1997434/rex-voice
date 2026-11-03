@@ -1,6 +1,6 @@
 # rex-voice — 手机实时语音遥控 Mac
 
-iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这台 Mac 上 Rex 各窗格和 Claude 的进展、往会话里发指令、听到「挂断吧」就挂。2026-11-01 立项，用户拍板：原生 iOS app + TestFlight、扫码配对、先只管 Rex、以后扩到整台 Mac。方案全文见 `docs/plan-2026-11-01.md`，协议见 `docs/protocol.md`，续做见 `rex-voice-followups.md`。立项前的一次性实验在 `~/data/claude/voice-probe/`（Node，不进仓），`tools.mjs` 是工具行为的移植依据。
+iPhone app 跟实时语音模型（千问 / Grok；OpenAI、Gemini、MOSS 2026-11-03 用户撤下，包留在 `internal/voice/` 没注册）打电话，它自己读这台 Mac 上 Rex 各窗格和 Claude 的进展、往会话里发指令、听到「挂断吧」就挂。2026-11-01 立项，用户拍板：原生 iOS app + TestFlight、扫码配对、先只管 Rex、以后扩到整台 Mac。方案全文见 `docs/plan-2026-11-01.md`，协议见 `docs/protocol.md`，续做见 `rex-voice-followups.md`。立项前的一次性实验在 `~/data/claude/voice-probe/`（Node，不进仓），`tools.mjs` 是工具行为的移植依据。
 
 ## 三个部件
 
@@ -10,7 +10,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 | `rex-voice-relay` 中继 | `cmd/rex-voice-relay` | ccs-maruiao（`r.maruiao.top` 那台），nginx `r.maruiao.top/_voice/` 后面 | systemd |
 | iOS app | `ios/RexVoice` | iPhone，TestFlight 分发 | — |
 
-音频走 Mac：手机 ⇄ 中继 ⇄ Mac ⇄ OpenAI。OpenAI key 只在 Mac：服务从钥匙串读（`rex-voiced setup` 写入，服务 `rex-voice` 账户 `openai`），env `OPENAI_API_KEY` 优先，开发时用 `OPENAI_API_KEY=$(flow-cred OPENAI_API_KEY)`。手机和 Mac 之间端到端加密，中继只转发。
+音频走 Mac：手机 ⇄ 中继 ⇄ Mac ⇄ 语音供应商。key 平时由手机随 `call.start` 发来；Mac 兜底 key 在钥匙串（`rex-voiced setup -provider qwen|grok` 写入，服务 `rex-voice` 账户是供应商名），env `DASHSCOPE_API_KEY` / `XAI_API_KEY` 优先，开发时用 `DASHSCOPE_API_KEY=$(flow-cred QWEN_API_KEY_2)`（国际站的 key；`QWEN_API_KEY` 是北京的）。手机和 Mac 之间端到端加密，中继只转发。
 
 ## 规矩
 
@@ -20,7 +20,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 - 工具层（`internal/tools`）是注册表，加新能力（AppleScript、computer-use）只加一组、不改调用方。
 - 语音发指令的闸（2026-11-02 用户定）：发往 **shell 窗格**的文字含「生产 / 部署 / 上线 / 发布 / 回滚 / 迁移 / rm -rf / git push / sudo」直接拒；发往 **Claude 窗格**的一律放行，靠提示词「逐字复述 → 用户确认」（往 shell 窗格发普通命令不复述、直接发，2026-11-02 用户定），部署授权照常由那个 Claude 的 `~/.claude/hooks/prod-guard.py` 把关（语音说「部署 geo 生产」等于用户在那个会话里打了这句）。关窗格 / 关会话也要先复述确认，在跑的窗格不带 force 不关。
 - 每次 TestFlight 上传写进 `docs/releases.md`：版本、build 号、commit、改了什么。
-- MOSS-Live（0.3.6 起第五家）：工具调用只有半个回路（文档没写，11-03 探出来的：它会调、结果也收，但不自己接着答，要用户再问一句才用结果；格式见协议 4.5），没有文字输入：试听不显示，Claude 卡住 / 静音提醒只能发文字转录不口播；音色不可选、每轮会漂。
+- 供应商只有千问和 Grok（0.3.7 起，2026-11-03 用户定）：`internal/voice/{openai,gemini,moss}` 留着（`internal/call` 的测试用 openai 假服务器），`serve.go` 不注册、iOS 枚举里没有；要加回来就补一行 blank import 和一个 case。MOSS 的坑（半个工具回路、没文字输入）记在协议 4.5。
 
 ## 部署
 
@@ -66,6 +66,7 @@ iPhone app 跟实时语音模型（OpenAI Realtime）打电话，它自己读这
 30. 推送开关（0.3.5）：设置页「基本」卡里关掉「Claude 等我时推送提醒」，让一个 Claude 弹 AskUserQuestion → 手机不收推送，但打开 app 主屏仍有提问卡、通话中助手仍会说；重开开关再弹一题 → 推送回来。杀掉 app 再开，开关状态还在。
 31. 作答不重复推（0.3.5）：在 Mac 上回答 AskUserQuestion，光标移到「Type something.」打几个字 → 手机只收到最初那一条推送，不再每 5 秒一条。
 32. MOSS（0.3.6）：设置页网格第五家「MOSS」、填 key，没有音色卡和试听；主屏长按 logo 轮盘弧上四家都在屏内、能转到 MOSS 选中；通话：问「现在有几个 Claude 在跑」→ 它说一句过渡语后停住，再问「查到了吗」→ 报真实的窗格（和 OpenAI 答的一致）；插嘴它 1 秒内停；说「挂断吧」→ 它道别说完才挂；通话中让一个 Claude 弹题 → 主屏有提问卡、助手不口播只多一条「X 的 Claude 在等你回答」文字；Qwen 接通 1 秒内。
+33. 0.3.7：设置页网格只有「千问」「Grok」两家（升级前选着 GPT / Gemini / MOSS 的，打开后变成千问，不空白）；主屏长按 logo 轮盘弧上只有一家、短弧在屏内；幽灵通话：通话中说「挂断吧」，助手道别时立刻锁屏、放一分钟再解锁 → 状态是「待机」、没有自己起通话、Mac 日志没有新的 call started；通话中 Wi-Fi 切蜂窝仍自己恢复、通话继续；千问选 qwen3.8（音色 Tina）：开一个 Claude、打招呼、说「把它关掉」→ 它要么关掉、要么说「它在干活，要强制关吗」，不会只说「我这就关」而没动作；选 qwen-audio-3.1 同样。
 
 ## 哪些文档不能信
 

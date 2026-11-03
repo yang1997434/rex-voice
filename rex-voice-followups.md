@@ -96,3 +96,12 @@
 - [已做] 第一句延迟（用户 11-03 反馈）：Qwen 的根因是先连北京、等拒绝（实测 4.5 秒）才连新加坡，改成默认只连国际站；连上后说完到开口 0.2 秒。OpenAI 拨号 1.3 秒、说完到开口 0.4 秒，Mac 转发不缓冲、手机收到即播；「偶尔慢」还没抓到样本，再遇到记下时间我查 debug 日志。
 - [已做] 0.3.5（build 202611030931，commit 4ecff6f）：设置页「Claude 等我时推送提醒」开关（ctl `prefs{push}`，Mac 只放内存、手机每次连上重发）；Mac 上作答打字时不再每 5 秒重推（ParseBox 把输入框那行整行丢掉，根因见 docs/protocol.md）。本机 rex-voiced 已重装 0.3.5-dev。
 - [ ] 真机验 E2E 30、31（推送开关、作答不重复推）。
+
+## 0.3.7（2026-11-03 用户：撤三家、幽灵通话、千问 3.8 关窗格）
+
+- [已做] 供应商只留千问 + Grok（用户 11-03 定「GPT、Gemini、MOSS 都撤掉」）：Mac `serve.go` 不再注册三家、默认供应商改 qwen、`setup` 只认 qwen | grok；包和 `voice.OpenAI` 等常量留着（`internal/call` 测试用 openai 假服务器）；iOS 枚举只剩两家、轮盘单槽、三家 logo 删掉。要加回来：serve.go 一行 blank import + iOS 一个 case + logo。
+- [已做] 锁屏后自己起通话（用户 11-03 真机两次）：根因是手机锁屏时 socket 已死、没收到 Mac 的 `hang_up`，`inCall` 还是 true，重连后 `.ready` 把存着的 `call.start` 原样重发（CallController 旧 336 行）。改法：Mac 每次 hello 后必回 `status`（有通话是当前状态、没有是 `ended`），手机重连后不再重发、等这条，`ended` 或 5 秒没等到就结束并提示；正常挂断仍靠 `hang_up` 放完道别。
+- [已做] 千问 3.8 说「我这就关」却没调 close_pane（用户 11-03 真机三次）：真机日志里那一轮没有任何工具事件；同一通电话里 3.8 两次发来截断的 `function_call_arguments.done`（`read_claude` 参数只剩半截、调失败后它才重发）。改法：`response.done` 的 `output[]` 里的 `function_call` 项也认（补没来的、替换截断的）；提示词加「没调工具不许说做了」。文字模式复现 3 次 3.8 都调了 close_pane（两次被拒：刚打完招呼的 Claude 还在 working，它问要不要强制）；语音假手机 3.8 第二轮没触发服务端 VAD（听不到第二句），3.1 / Grok 语音整套开关挂都过。3.8 真机还要用户再试 E2E 33。
+- [已做] `rex-voiced chat -voice`（3.8 只认 Tina，之前没法在文字模式测它）；假手机 `-invite` / `REXVOICE_INVITE`（中继开了邀请码后假手机连不上）。
+- [ ] 真机验 E2E 33；3.8 若仍关不了，下一步下掉 3.8 或只留 3.1（用户定）。
+- [ ] close_pane 对刚打完招呼、正在回「你好」的 Claude 会以 working 拒掉，助手只能问「要强制吗」；要不要把「只是在回话、没在跑工具」的 Claude 放行，用户定。
