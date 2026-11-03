@@ -37,30 +37,3 @@ func Build(name string, aliases map[string]string, labels []string) string {
 		"用户说「挂断吧」「先这样」「拜拜」「不聊了」之类时，先说一句简短的告别，再调用 hang_up。")
 	return b.String()
 }
-
-// BuildChat is the prompt for a provider with no tools (MOSS-Live): it can only talk, and the
-// session layer hangs up for it when the user says so.
-func BuildChat(name string) string {
-	if name == "" {
-		name = "用户"
-	}
-	return "你是 Rex 的语音助手，称呼对方「" + name + "」。说中文，口语、简短，像打电话，一次只说一两句。" +
-		"你没有任何工具：看不了屏幕、读不了文件、发不了指令、改不了任何东西。你知道的 Mac 上的情况只有通话开始时给你的那份快照，之后的变化你不知道。" +
-		"用户让你去看、去查、去发指令、去操作时，直说「我这边做不了，换 OpenAI 或 Grok 那几家可以」，不要假装看过、不要编状态；" +
-		"答快照里的内容时说明那是通话开始时的情况。快照里的时间都是 24 小时制。" +
-		"用户说「挂断吧」「拜拜」「不聊了」之类时，简短道别一句就好。"
-}
-
-// NameOf recovers the name Build was given from its output; "" when instructions did not come from Build.
-// voice.Config carries only the built instructions, so a provider that writes its own prompt reads the name back.
-func NameOf(instructions string) string {
-	rest, ok := strings.CutPrefix(instructions, "你是")
-	if !ok {
-		return ""
-	}
-	name, _, ok := strings.Cut(rest, "的开发助手")
-	if !ok {
-		return ""
-	}
-	return name
-}

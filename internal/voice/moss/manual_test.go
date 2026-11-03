@@ -1,13 +1,15 @@
 //go:build manual
 
-// A real MOSS-Live round trip (free for now). It logs the first raw text events so the wire field
-// names (type / event / action, what is under data) can be checked against client.go's guesses.
+// A real MOSS-Live round trip with tools (free for now): the model calls list_panes, answers from its
+// result after the function_call_output, then calls hang_up itself. Every text event is logged
+// verbatim except *.transcript.updated; audio frames are not.
 //
 //	MOSS_API_KEY=$(flow-cred MOSS_API_KEY) go test -tags manual ./internal/voice/moss/ -run Manual -v
 package moss
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,18 +20,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yang1997434/rex-voice/internal/tools"
 	"github.com/yang1997434/rex-voice/internal/voice"
 )
 
-// rawPrinter logs the first maxRaw "moss: raw" records verbatim and every non-debug record.
+// rawPrinter logs "moss: raw" records verbatim (except transcript.updated), sends, and every non-debug record.
 type rawPrinter struct {
 	t  *testing.T
 	mu sync.Mutex
-	n  int
 	t0 time.Time
 }
-
-const maxRaw = 40
 
 func (p *rawPrinter) Enabled(context.Context, slog.Level) bool { return true }
 func (p *rawPrinter) WithAttrs([]slog.Attr) slog.Handler       { return p }
@@ -45,10 +45,10 @@ func (p *rawPrinter) Handle(_ context.Context, r slog.Record) error {
 	ms := time.Since(p.t0).Milliseconds()
 	switch {
 	case r.Message == "moss: raw":
-		if p.n++; p.n <= maxRaw {
-			p.t.Logf("[%5d ms raw %d] %s", ms, p.n, strings.Join(attrs, " "))
+		if a := strings.Join(attrs, " "); !strings.Contains(a, "transcript.updated") {
+			p.t.Logf("[%5d ms raw] %s", ms, a)
 		}
-	case r.Message == "moss: send" || r.Message == "moss: audio":
+	case r.Message == "moss: send":
 		p.t.Logf("[%5d ms] %s %s", ms, r.Message, strings.Join(attrs, " "))
 	case r.Level > slog.LevelDebug:
 		p.t.Logf("[%5d ms log] %s %s", ms, r.Message, strings.Join(attrs, " "))
@@ -102,34 +102,47 @@ func say(t *testing.T, s voice.Session, pcm []byte) {
 	}
 }
 
+// twoPanes is list_panes' fixed answer.
+const twoPanes = `[{"session":"jobs","block":"b1","label":"go test","project":"rex-voice","app":"shell","state":"working","doing":"在跑命令"},` +
+	`{"session":"rex-voice","block":"b2","label":"claude","project":"rex-voice","app":"claude-code","state":"idle","doing":"空闲"}]`
+
 func TestManualAudio(t *testing.T) {
 	key := os.Getenv("MOSS_API_KEY")
 	if key == "" {
 		t.Skip("MOSS_API_KEY not set")
 	}
-	hello, bye := speech(t, "你好，介绍一下你自己"), speech(t, "挂断吧")
-	user := make(chan string, 4)
-	assistant := make(chan string, 4)
-	turn := make(chan struct{}, 4)
+	ask, bye := speech(t, "现在 Mac 上有几个窗格在跑？帮我查一下"), speech(t, "挂断吧")
+	// A real registry: its argument check rejects unknown keys, so a leftover spoken_response would fail the call.
+	var reg tools.Registry
+	reg.Register(tools.Tool{Name: "list_panes", Description: "列出 Mac 上 Rex 的窗格；用户问窗格、Claude、任务状态时必须调用",
+		Parameters: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Run:        func(context.Context, json.RawMessage) (any, error) { return json.RawMessage(twoPanes), nil }})
 	hangUp := make(chan string, 1)
-	errs := make(chan error, 1)
+	reg.Register(tools.HangUpDef(func(reason string) {
+		select {
+		case hangUp <- reason:
+		default:
+		}
+	}))
+	called := make(chan string, 8)
+	assistant := make(chan string, 16)
+	turn := make(chan struct{}, 8)
+	errs := make(chan error, 4)
 	var audioMu sync.Mutex
 	var audioBytes int
-	cfg := voice.Config{Provider: voice.Moss, Key: key, Instructions: voice.Build("测试员", nil, nil),
+	cfg := voice.Config{Provider: voice.Moss, Key: key, Instructions: voice.Build("测试员", nil, nil), Tools: reg.Defs(),
 		Logger: slog.New(&rawPrinter{t: t}), UsageLog: usageWriter{t},
-		Call: func(_ context.Context, name, args string) string {
-			t.Logf("[tool] %s %s", name, args)
-			switch name {
-			case "hang_up":
-				hangUp <- args
-				return `{"ok":true}`
-			case "list_panes":
-				return `[{"session":"jobs","block":"b1","title":"go test","state":"idle"}]`
+		Call: func(ctx context.Context, name, args string) string {
+			out := reg.Call(ctx, name, args)
+			t.Logf("[tool] %s %s -> %s", name, args, out)
+			if strings.HasPrefix(out, `{"error"`) {
+				errs <- fmt.Errorf("tool %s failed: %s", name, out)
 			}
-			return `[]`
+			called <- name
+			return out
 		},
 		Handlers: voice.Handlers{
-			UserText:      func(s string) { t.Logf("[user] %s", s); user <- s },
+			UserText:      func(s string) { t.Logf("[user] %s", s) },
 			AssistantText: func(s string) { t.Logf("[assistant] %s", s); assistant <- s },
 			AudioDelta: func(b []byte) {
 				audioMu.Lock()
@@ -149,26 +162,43 @@ func TestManualAudio(t *testing.T) {
 	defer s.Close()
 	s.SetMuted(true) // silence while nobody talks
 	time.Sleep(500 * time.Millisecond)
-	say(t, s, hello)
+	say(t, s, ask)
 	spoke := time.Now()
-	for _, w := range []struct {
-		c    <-chan string
-		what string
-	}{{user, "UserText"}, {assistant, "AssistantText"}} {
+	waitTool := func(want string) {
+		t.Helper()
+		for {
+			select {
+			case name := <-called:
+				if name == want {
+					return
+				}
+			case e := <-errs:
+				t.Fatal(e)
+			case <-time.After(30 * time.Second):
+				t.Fatalf("no %s call", want)
+			}
+		}
+	}
+	waitTool("list_panes")
+	// The filler line's transcript may land around the tool call; the answer from the result comes after it.
+	var said []string
+	for done := false; !done; {
 		select {
-		case <-w.c:
+		case a := <-assistant:
+			said = append(said, a)
+		case <-turn:
+			done = true
 		case e := <-errs:
 			t.Fatal(e)
 		case <-time.After(30 * time.Second):
-			t.Fatalf("no %s", w.what)
+			t.Fatalf("no TurnDone after the list_panes output (assistant said %q)", said)
 		}
 	}
-	select {
-	case <-turn:
-	case e := <-errs:
-		t.Fatal(e)
-	case <-time.After(30 * time.Second):
-		t.Fatal("no TurnDone")
+	for len(assistant) > 0 {
+		said = append(said, <-assistant)
+	}
+	if all := strings.Join(said, " "); !strings.ContainsAny(all, "两2二") && !strings.Contains(all, "jobs") && !strings.Contains(all, "rex-voice") {
+		t.Errorf("answer does not use the list_panes result: %q", said)
 	}
 	audioMu.Lock()
 	n := audioBytes
@@ -179,14 +209,11 @@ func TestManualAudio(t *testing.T) {
 		t.Error("no answer audio")
 	}
 	say(t, s, bye)
+	waitTool("hang_up")
 	select {
-	case a := <-hangUp:
-		if a != hangUpReason {
-			t.Errorf("hang_up args %s", a)
-		}
-	case e := <-errs:
-		t.Fatal(e)
-	case <-time.After(30 * time.Second):
-		t.Fatal("no hang_up after 挂断吧")
+	case r := <-hangUp:
+		t.Logf("hang_up reason %q", r)
+	default:
+		t.Error("hang_up called but its Run did not")
 	}
 }

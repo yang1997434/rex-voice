@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/net/websocket"
 
+	"github.com/yang1997434/rex-voice/internal/tools"
 	"github.com/yang1997434/rex-voice/internal/voice"
 )
 
@@ -28,7 +29,8 @@ type fake struct {
 	header http.Header
 	query  string
 	ws     *websocket.Conn
-	updErr string // session.updated data.error
+	updErr string         // session.updated data.error
+	update map[string]any // the last session.update
 }
 
 func newFake(t *testing.T) *fake {
@@ -59,6 +61,7 @@ func newFake(t *testing.T) *fake {
 				case "attach_session":
 					websocket.Message.Send(ws, `{"type":"session_attached","data":{"session_id":"s1"}}`)
 				case "session.update":
+					f.update = ev // read after f.got delivers ev, so no race
 					websocket.Message.Send(ws, `{"type":"session.updated","data":{"error":`+js(f.updErr)+`}}`)
 				}
 				f.got <- ev
@@ -147,14 +150,14 @@ func setVar[T any](t *testing.T, p *T, v T) {
 	t.Cleanup(func() { *p = old })
 }
 
+var testTools = []tools.ToolDef{
+	{Type: "function", Name: "list_panes", Description: "列出窗格", Parameters: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
+	{Type: "function", Name: "hang_up", Description: "挂断", Parameters: json.RawMessage(`{"type":"object","properties":{"reason":{"type":"string"}},"additionalProperties":false}`)},
+}
+
 func TestDialHandshake(t *testing.T) {
 	f := newFake(t)
-	var called []string
-	cfg := f.cfg(voice.Config{Instructions: voice.Build("小王", nil, nil), Version: "1.2",
-		Call: func(_ context.Context, name, args string) string {
-			called = append(called, name+" "+args)
-			return `{"` + name + `":[]}`
-		}})
+	cfg := f.cfg(voice.Config{Instructions: voice.Build("小王", nil, nil), Version: "1.2", Tools: testTools})
 	s, err := voice.Dial(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -172,50 +175,38 @@ func TestDialHandshake(t *testing.T) {
 	ev := f.next(t)
 	sess, _ := ev["session"].(map[string]any)
 	persona, _ := sess["persona"].(map[string]any)
-	instr, _ := sess["instructions"].(string)
-	if ev["action"] != "session.update" || persona["name"] != "Rex" || !strings.Contains(persona["prompt"].(string), "「小王」") {
+	if ev["action"] != "session.update" || persona["name"] != "Rex" || persona["prompt"] != cfg.Instructions {
 		t.Fatalf("session.update = %s", js(ev))
 	}
-	if !strings.HasPrefix(instr, snapshotPrefix) || !strings.Contains(instr, `list_panes：{"list_panes":[]}`) || !strings.Contains(instr, `list_claude：{"list_claude":[]}`) {
-		t.Errorf("instructions = %q", instr)
+	var want any // testTools as the fake decoded it: same JSON, map key order
+	json.Unmarshal([]byte(js(testTools)), &want)
+	if js(sess["tools"]) != js(want) {
+		t.Errorf("session.tools = %s, want %s", js(sess["tools"]), js(want))
 	}
-	if js(called) != `["list_panes {}","list_claude {}"]` {
-		t.Errorf("tool calls = %v", called)
+	if _, ok := sess["instructions"]; ok {
+		t.Errorf("instructions sent: %s", js(sess))
 	}
 	if ev := f.next(t); js(ev) != `{"action":"mic_state","enabled":true}` {
 		t.Fatalf("third event %s", js(ev))
 	}
 }
 
-func TestSnapshot(t *testing.T) {
-	if got := snapshot(context.Background(), nil); got != snapshotPrefix+"拿不到快照" {
-		t.Errorf("nil Call: %q", got)
-	}
-	failing := func(_ context.Context, name, _ string) string {
-		if name == "list_claude" {
-			return `{"error":"rex 不在"}`
+// Without tools there is no tools key; a long prompt is cut to maxPrompt runes, an empty one gets the default.
+func TestDialPromptNoTools(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{strings.Repeat("提", maxPrompt+500), strings.Repeat("提", maxPrompt)},
+		{"", defaultPrompt},
+	} {
+		f := newFake(t)
+		f.dial(t, voice.Config{Instructions: c.in})
+		sess, _ := f.update["session"].(map[string]any)
+		persona, _ := sess["persona"].(map[string]any)
+		if persona["prompt"] != c.want {
+			t.Errorf("prompt for %d runes in = %d runes, want %d", len([]rune(c.in)), len([]rune(persona["prompt"].(string))), len([]rune(c.want)))
 		}
-		return `[]`
-	}
-	if got := snapshot(context.Background(), failing); got != snapshotPrefix+"拿不到快照" {
-		t.Errorf("error from Call: %q", got)
-	}
-	stamped := func(_ context.Context, name, _ string) string {
-		if name == "list_claude" {
-			return `[{"started":"2026-11-02T17:19:04-08:00","last_active":"2026-11-03T05:25:14-08:00"}]`
+		if _, ok := sess["tools"]; ok {
+			t.Errorf("tools key without cfg.Tools: %s", js(sess))
 		}
-		return `[]`
-	}
-	now := time.Date(2026, 11, 3, 5, 40, 0, 0, time.FixedZone("PST", -8*3600))
-	saved := snapshotNow
-	snapshotNow = func() time.Time { return now }
-	t.Cleanup(func() { snapshotNow = saved })
-	if got := snapshot(context.Background(), stamped); !strings.Contains(got, `"started":"11-02 17:19"`) || !strings.Contains(got, `"last_active":"今天 05:25"`) {
-		t.Errorf("timestamps not rewritten: %s", got)
-	}
-	long := func(context.Context, string, string) string { return strings.Repeat("窗", 5000) }
-	if got := snapshot(context.Background(), long); len([]rune(got)) != maxSnapshot {
-		t.Errorf("snapshot is %d runes, want %d", len([]rune(got)), maxSnapshot)
 	}
 }
 
@@ -349,38 +340,6 @@ func TestPlaybackReceipts(t *testing.T) {
 	}
 }
 
-func TestHangUpPhrase(t *testing.T) {
-	f := newFake(t)
-	calls := make(chan string, 4)
-	users := make(chan string, 4)
-	s := f.dial(t, voice.Config{
-		Call: func(_ context.Context, name, args string) string {
-			if name == "hang_up" {
-				calls <- args
-			}
-			return `{"ok":true}`
-		},
-		Handlers: voice.Handlers{UserText: func(u string) { users <- u }}})
-	f.push(t, `{"type":"input.transcript.done","data":{"text":"那 挂 断吧"}}`)
-	if u := wait(t, users, "UserText"); u != "那 挂 断吧" {
-		t.Errorf("UserText = %q", u)
-	}
-	if a := wait(t, calls, "hang_up"); a != hangUpReason {
-		t.Errorf("hang_up args = %s", a)
-	}
-	f.push(t, `{"type":"output.transcript.done","data":{"text":"好的，拜拜","run_id":1,"turn_id":1}}`,
-		`{"type":"input.transcript.done","data":{"text":"挂了"}}`)
-	wait(t, users, "second UserText")
-	select {
-	case a := <-calls:
-		t.Errorf("hang_up called twice (%s)", a)
-	case <-time.After(200 * time.Millisecond):
-	}
-	if turns := s.RecentTurns(5); js(turns) != `[{"Role":"user","Text":"那 挂 断吧"},{"Role":"assistant","Text":"好的，拜拜"},{"Role":"user","Text":"挂了"}]` {
-		t.Errorf("turns = %s", js(turns))
-	}
-}
-
 func TestSendTextFails(t *testing.T) {
 	f := newFake(t)
 	s := f.dial(t, voice.Config{})
@@ -508,5 +467,94 @@ func TestAudioFragmentsOneReceipt(t *testing.T) {
 	case ev := <-f.got:
 		t.Fatalf("second receipt for the same chunk: %s", js(ev))
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// One tool call: spoken_response is stripped, the output goes back as function_call_output, no
+// response.create follows and TurnDone waits for response.ended.
+func TestToolRoundTrip(t *testing.T) {
+	f := newFake(t)
+	calls := make(chan string, 4)
+	turn := make(chan struct{}, 4)
+	f.dial(t, voice.Config{Tools: testTools,
+		Call: func(_ context.Context, name, args string) string {
+			calls <- name + " " + args
+			return `{"panes":2}`
+		},
+		Handlers: voice.Handlers{TurnDone: func() { turn <- struct{}{} }}})
+	args := js(`{"spoken_response":"好","block":"b1"}`)
+	f.push(t, `{"action":"response.function_call_arguments.done","data":{"arguments":`+args+`,"call_id":"c1","item_id":"i1","name":"read_pane","output_index":0,"response_id":"r1","type":"function_call"}}`,
+		`{"action":"response.done","data":{"response":{"id":"r1","status":"completed","output":[{"type":"function_call","call_id":"c1","name":"read_pane","arguments":`+args+`,"status":"completed"}]}}}`)
+	if c := wait(t, calls, "Call"); c != `read_pane {"block":"b1"}` {
+		t.Errorf("Call got %s", c)
+	}
+	if ev := f.next(t); js(ev) != `{"action":"conversation.item.create","item":{"call_id":"c1","output":"{\"panes\":2}","type":"function_call_output"}}` {
+		t.Fatalf("want function_call_output, got %s", js(ev))
+	}
+	f.quiet(t, 200*time.Millisecond) // no response.create, no second output
+	select {
+	case <-turn:
+		t.Fatal("TurnDone before response.ended")
+	case c := <-calls:
+		t.Fatalf("tool run twice: %s", c)
+	default:
+	}
+	f.push(t, `{"action":"response.ended","data":{"status":"completed","run_id":1,"turn_id":1}}`)
+	wait(t, turn, "TurnDone")
+	select {
+	case <-turn:
+		t.Error("TurnDone twice")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// Two calls in one response.done both get an output; a timed-out one gets the error output; no Call gets its own error.
+func TestToolsParallelAndTimeout(t *testing.T) {
+	setVar(t, &toolTimeout, 100*time.Millisecond)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	f := newFake(t)
+	f.dial(t, voice.Config{Call: func(_ context.Context, name, _ string) string {
+		if name == "slow" {
+			<-release
+		}
+		return `{"ok":1}`
+	}})
+	f.push(t, `{"action":"response.done","data":{"response":{"output":[{"type":"message"},`+
+		`{"type":"function_call","call_id":"c1","name":"fast","arguments":"{}"},`+
+		`{"type":"function_call","call_id":"c2","name":"slow","arguments":"{}"}]}}}`)
+	got := map[string]any{}
+	for range 2 {
+		ev := f.next(t)
+		item, _ := ev["item"].(map[string]any)
+		if ev["action"] != "conversation.item.create" || item["type"] != "function_call_output" {
+			t.Fatalf("want function_call_output, got %s", js(ev))
+		}
+		got[item["call_id"].(string)] = item["output"]
+	}
+	if got["c1"] != `{"ok":1}` || got["c2"] != timeoutOutput {
+		t.Errorf("outputs = %s", js(got))
+	}
+	f.quiet(t, 200*time.Millisecond)
+
+	f2 := newFake(t)
+	f2.dial(t, voice.Config{})
+	f2.push(t, `{"action":"response.done","data":{"response":{"output":[{"type":"function_call","call_id":"c3","name":"list_panes","arguments":"{}"}]}}}`)
+	if ev := f2.next(t); js(ev) != `{"action":"conversation.item.create","item":{"call_id":"c3","output":"{\"error\":\"没有配置工具\"}","type":"function_call_output"}}` {
+		t.Fatalf("nil Call: got %s", js(ev))
+	}
+}
+
+func TestStripSpoken(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"spoken_response":"好","block":"b1"}`: `{"block":"b1"}`,
+		`{"spoken_response":"好"}`:              `{}`,
+		`{ "block": "b1" }`:                    `{ "block": "b1" }`, // nothing to strip: untouched
+		`not json`:                             `not json`,
+		``:                                     ``,
+	} {
+		if got := stripSpoken(in); got != want {
+			t.Errorf("stripSpoken(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

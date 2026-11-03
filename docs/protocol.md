@@ -94,16 +94,16 @@ Mac 侧把提供方抽成一个接口 `internal/voice`（`voice.go`）：`voice.
 - 用量：按连接时长计费（$0.08/分钟，含静音），每条 `SendText` 另加 $0.004，`function_call_output` 免费（`prices.go`）。`response.done` 只报 tokens、`usd` 记 0；`Close`（含拨号失败）时写一行 usage.log：4.1 的字段加 `seconds`，`input` / `output` 是整个会话的 token 合计，其余 0。
 
 
-### 4.5 MOSS-Live（模思智能，WebSocket；2026-11-03 真 key 跑通，只能听和聊：没有 tools、没有文字输入）
+### 4.5 MOSS-Live（模思智能，WebSocket；2026-11-03 真 key 跑通；工具调用文档没写、是探出来的）
 
-- `wss://api.mosi.cn/v1/realtime?model=moss-live-1.0`（`Extra.url` 覆盖），头 `Authorization: Bearer`、`User-Agent rex-voiced/<版本>`。事件 JSON 的名字字段是 `action`（实测，文档没明说），字段在 `data` 下。握手：`attach_session` → `session_attached{session_id}` → `session.update{session:{persona:{name:"Rex",prompt:voice.BuildChat(称呼)},instructions:<开场快照>}}` → `session.updated`（`data.error` 非空算拨号失败）→ `mic_state enabled:true`。不发 `media.mode`（没视频，音频用裸 PCM 二进制帧）。
-- 开场快照：拨号前调 `list_panes`、`list_claude` 把结果塞进 `instructions`（截 6000 字），之后不更新；`cfg.Instructions` 和 `cfg.Tools` 忽略。`TextOnly`（`rex-voiced chat`）直接拒。
-- 上行：24k → 16k（`voice.Downsampler`）二进制帧，收到多少发多少（第一帧 620 字节、之后 640，服务端照收）；`SetMuted(true)` 起 goroutine 每 20 ms 发 640 字节零（文档要求停说后持续送静音），`AppendAudio` 期间送来的音频丢掉，`SetMuted(false)` 停掉并重置 Downsampler。
+- `wss://api.mosi.cn/v1/realtime?model=moss-live-1.0`（`Extra.url` 覆盖），头 `Authorization: Bearer`、`User-Agent rex-voiced/<版本>`。事件 JSON 的名字字段是 `action`（实测，文档没明说），字段在 `data` 下。握手：`attach_session`（**不要**带 `delegation` / `tools`，带了 `invalid_public_request` 并断线）→ `session_attached{session_id, delegation:"none"}` → `session.update{session:{persona:{name:"Rex",prompt:<voice.Build 截 8000 字>}, tools:<cfg.Tools 扁平格式，同 4.1>}}` → `session.updated{data:{error:"", tools:[名字…]}}`（`error` 非空算拨号失败）→ `mic_state enabled:true`。不发 `media.mode`（没视频，音频用裸 PCM 二进制帧）。
+- 工具（11-03 真 key 探出，文档一字没提）：模型调工具时先说一句过渡语（`response.audio.started` + 音频），同时来 `response.function_call_arguments.done{data:{arguments, call_id, item_id, name, response_id}}` 和 `response.done{data:{response:{output:[{type:"function_call", call_id, name, arguments}]}}}`；`arguments` 里多一个 `spoken_response`（那句过渡语），调我们的工具前删掉。结果用 `conversation.item.create{item:{type:"function_call_output", call_id, output}}` 还回去（回 `conversation.item.created`；多带 `item_id` / `response_id` 会被拒）。**但模型不会自己接着答**：那轮 run 停在过渡语上（没有 `response.audio.done` / `response.ended`），`response.create` 被拒（`invalid_public_request`），`attach_session{delegation:"client"}`、`playback.completed` / `playback.stopped`、`mic_state` 开关、非静音音频、说「嗯」都推不动（11-03 六次探测）；只有用户再问一句真问题（「查到了吗」）它才用工具结果回答（答得对）。所以公开接口上工具只算半个回路。
+- 文字输入仍然没有（`conversation.item.create` 带 `message` 被拒）：`SendText` 返回错误，call 层的 Claude 卡住提醒 / 静音提醒走文字转录兜底，试听做不了。`TextOnly`（`rex-voiced chat`）直接拒。
+- 上行：24k → 16k（`voice.Downsampler`）二进制帧，收到多少发多少（第一帧 620 字节、之后 640，服务端照收）；`SetMuted(true)` 起 goroutine 每 20 ms 发 640 字节零（文档要求停说后持续送静音），期间 `AppendAudio` 送来的音频丢掉，`SetMuted(false)` 停掉并重置 Downsampler。
 - 下行：`response.audio.context{chunk_id,run_id,turn_id}` 后跟该 chunk 的二进制帧，**一个 chunk 拆成几个 WebSocket 帧发**（实测 4096+4096+1408 这种），`readFrame` 必须在 `HandleFrame` 之后再看 `PayloadType`（续帧那时才带类型）；48k → 24k（`voice.Down48to24`，2:1 半带 FIR，不跨帧留历史）→ `AudioDelta`。`input.transcript.done` → `UserText`、`output.transcript.done` → `AssistantText`、`response.ended`（completed / aborted / failed 都算）→ `ResponseDone{Unpriced}` + `TurnDone`。还会来 `input.speech.started/stopped`、`response.audio.started`、`*.transcript.updated`，只记 debug。
-- 打断：服务端自己判，来 `response.audio.stop` → 该 run 标打断、停掉未到期回执、回 `playback.stopped{played_audio_ms}`、`SpeechStarted`；`response.interrupted` 只标打断。没有客户端 cancel 事件，`Cancel` 空操作。
-- 回执（服务端靠它做流控，不回就不再发后面的 chunk）：Mac 不知道手机何时真播完，按 48k 字节数 / 96 估每个 chunk 的时长排「播放钟」，到点发 `playback.chunk.completed`（同一 chunk 的多片并成一条），`response.audio.done` 后在最后一片播完时发 `playback.completed`。实测一轮 8 秒的回答 chunk 约 100 ms 一个、按回执节奏到达；`response.ended` 在 `playback.completed` 之后才来，所以 `TurnDone` 比别家晚整段播放时长。
-- 挂断：没有工具，`input.transcript.done` 去空白后含「挂断 / 挂了 / 拜拜」→ 调 `hang_up`（每会话一次），call 层等 `TurnDone` 再挂，模型的道别照样播完。
-- 用量：限时免费、收费表未知，`Close` 时写一行 `{provider:"moss",model,seconds,unpriced:true}`，不估价。会话上限文档没写，`MaxAge` 0。
+- 打断：服务端自己判，来 `response.audio.stop{reason:"barge-in"}` → 该 run 标打断、停掉未到期回执、回 `playback.stopped{played_audio_ms}`、`SpeechStarted`；`response.interrupted` 只标打断。没有客户端 cancel 事件，`Cancel` 空操作。全双工模型会自己判断一句话是不是对它说的，判成旁白就不接（11-03 真机一通里连着五句没接），接口里没有开关。
+- 回执（服务端靠它做流控，不回就不再发后面的 chunk，工具结果后的回答也要等过渡语的 `playback.completed`）：Mac 不知道手机何时真播完，按 48k 字节数 / 96 估每个 chunk 的时长排「播放钟」，到点发 `playback.chunk.completed`（同一 chunk 的多片并成一条），`response.audio.done` 后在最后一片播完时发 `playback.completed`。实测一轮 8 秒的回答 chunk 约 100 ms 一个、按回执节奏到达；`response.ended` 在 `playback.completed` 之后才来，所以 `TurnDone` 比别家晚整段播放时长。
+- 用量：限时免费、收费表未知，`Close` 时写一行 `{provider:"moss",model,seconds,unpriced:true}`，不估价。会话上限文档没写，`MaxAge` 0。音色不可选（`voice` 忽略），每轮音色会漂。
 - 真 key 实测（11-03，`go test -tags manual ./internal/voice/moss/`）：说完 → 第一段音频 0.75 秒；三次连跑都过，第二次有一轮在第 31 个 chunk 后服务端不再发、30 秒没等到后文（没复现，原因不明）。
 
 

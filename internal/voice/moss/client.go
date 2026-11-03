@@ -16,7 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
-	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -40,35 +40,14 @@ var (
 
 const (
 	maxTurns       = 50
-	maxSnapshot    = 6000 // runes of the opening snapshot in instructions
-	hangUpReason   = `{"reason":"用户说挂断"}`
-	snapshotPrefix = "现在 Mac 上 Rex 各窗格和 Claude 的状态（通话开始时的快照，之后不会更新；时间是 24 小时制）："
+	maxPrompt      = 8000 // runes of persona.prompt
+	defaultPrompt  = "你是 Rex 的语音助手，说中文、简短"
+	timeoutOutput  = `{"error":"工具超时"}`
+	noToolsOutput  = `{"error":"没有配置工具"}`
+	spokenResponse = "spoken_response" // MOSS adds the filler line it speaks to every tool call's arguments
 )
 
-// isoTime is an RFC 3339 timestamp in tool output ("2026-11-03T05:25:14-08:00"): read aloud by the model
-// as 下午五点 (11-03 实测), so the snapshot rewrites it to "今天 05:25" / "11-02 17:25".
-var isoTime = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})`)
-
-var snapshotNow = time.Now // tests pin it
-
-func plainTimes(text string, now time.Time) string {
-	return isoTime.ReplaceAllStringFunc(text, func(m string) string {
-		t, err := time.Parse(time.RFC3339Nano, m)
-		if err != nil {
-			return m
-		}
-		t = t.In(now.Location())
-		if t.YearDay() == now.YearDay() && t.Year() == now.Year() {
-			return t.Format("今天 15:04")
-		}
-		return t.Format("01-02 15:04")
-	})
-}
-
 var silence = make([]byte, 640) // 20 ms at 16 kHz
-
-// hangUpWords in the user's final transcript hang up: MOSS has no tools to call hang_up itself.
-var hangUpWords = []string{"挂断", "挂了", "拜拜"}
 
 type Session struct {
 	cfg    voice.Config
@@ -89,10 +68,9 @@ type Session struct {
 	fill chan struct{} // non-nil while muted: closing it stops the silence filler
 
 	// Owned by the event goroutine.
-	cur    *ids            // the response.audio.context waiting for its binary frame
-	runs   map[string]*run // run_id -> playback state
-	clock  time.Time       // when the last scheduled chunk ends playing
-	hungUp bool
+	cur   *ids            // the response.audio.context waiting for its binary frame
+	runs  map[string]*run // run_id -> playback state
+	clock time.Time       // when the last scheduled chunk ends playing
 }
 
 type ids struct {
@@ -115,7 +93,7 @@ type run struct {
 	cut    bool        // interrupted or stopped: later audio is dropped
 }
 
-// Dial snapshots Rex, connects, attaches a new session, sends session.update and returns once it is accepted.
+// Dial connects, attaches a new session, sends session.update and returns once it is accepted.
 func Dial(ctx context.Context, cfg voice.Config) (voice.Session, error) {
 	s, err := dial(ctx, cfg)
 	if err != nil {
@@ -142,7 +120,6 @@ func dial(ctx context.Context, cfg voice.Config) (*Session, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	instructions := snapshot(ctx, cfg.Call) // before connecting: the tools may take a while
 	wc, err := websocket.NewConfig(u+"?"+url.Values{"model": {cfg.Model}}.Encode(), "https://api.mosi.cn")
 	if err != nil {
 		return nil, fmt.Errorf("moss: %w", err)
@@ -156,7 +133,7 @@ func dial(ctx context.Context, cfg voice.Config) (*Session, error) {
 	sctx, cancel := context.WithCancel(context.Background())
 	s := &Session{cfg: cfg, log: log, ws: ws, start: time.Now(), ctx: sctx, cancel: cancel,
 		done: make(chan struct{}), runs: map[string]*run{}}
-	if err := s.setup(ctx, instructions); err != nil {
+	if err := s.setup(ctx); err != nil {
 		s.Close() // still writes the usage line
 		return nil, err
 	}
@@ -164,29 +141,7 @@ func dial(ctx context.Context, cfg voice.Config) (*Session, error) {
 	return s, nil
 }
 
-// snapshot is the instructions: Rex's panes and Claudes at call start, since MOSS cannot look later.
-func snapshot(ctx context.Context, call func(context.Context, string, string) string) string {
-	if call == nil {
-		return snapshotPrefix + "拿不到快照"
-	}
-	var parts []string
-	for _, tool := range []string{"list_panes", "list_claude"} {
-		tctx, cancel := context.WithTimeout(ctx, toolTimeout)
-		out := call(tctx, tool, "{}")
-		cancel()
-		if strings.HasPrefix(out, `{"error"`) {
-			return snapshotPrefix + "拿不到快照"
-		}
-		parts = append(parts, tool+"："+plainTimes(out, snapshotNow()))
-	}
-	t := snapshotPrefix + strings.Join(parts, "\n")
-	if utf8.RuneCountInString(t) > maxSnapshot {
-		t = string([]rune(t)[:maxSnapshot])
-	}
-	return t
-}
-
-func (s *Session) setup(ctx context.Context, instructions string) error {
+func (s *Session) setup(ctx context.Context) error {
 	deadline := time.Now().Add(readyTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
@@ -200,8 +155,15 @@ func (s *Session) setup(ctx context.Context, instructions string) error {
 	if _, err := s.await("session_attached"); err != nil {
 		return fmt.Errorf("moss: waiting for session_attached: %w", err)
 	}
-	persona := map[string]any{"name": "Rex", "aliases": []string{}, "prompt": voice.BuildChat(voice.NameOf(s.cfg.Instructions))}
-	if err := s.send(map[string]any{"action": "session.update", "session": map[string]any{"persona": persona, "instructions": instructions}}); err != nil {
+	prompt := cmp.Or(s.cfg.Instructions, defaultPrompt)
+	if utf8.RuneCountInString(prompt) > maxPrompt {
+		prompt = string([]rune(prompt)[:maxPrompt])
+	}
+	sess := map[string]any{"persona": map[string]any{"name": "Rex", "aliases": []string{}, "prompt": prompt}}
+	if len(s.cfg.Tools) > 0 {
+		sess["tools"] = s.cfg.Tools // here, not on attach_session: there they get the connection closed (invalid_public_request)
+	}
+	if err := s.send(map[string]any{"action": "session.update", "session": sess}); err != nil {
 		return fmt.Errorf("moss: session.update: %w", err)
 	}
 	f, err := s.await("session.updated")
@@ -210,6 +172,11 @@ func (s *Session) setup(ctx context.Context, instructions string) error {
 	}
 	if e := errText(f.Error); e != "" {
 		return fmt.Errorf("moss: session.update rejected: %s", e)
+	}
+	for _, t := range s.cfg.Tools {
+		if !slices.Contains(f.Tools, t.Name) {
+			s.log.Warn("moss: tool not registered", "tool", t.Name, "registered", f.Tools)
+		}
 	}
 	if err := s.send(map[string]any{"action": "mic_state", "enabled": true}); err != nil {
 		return fmt.Errorf("moss: mic_state: %w", err)
@@ -429,6 +396,18 @@ type fields struct {
 	Text      string          `json:"text"`
 	Status    string          `json:"status"`
 	Error     json.RawMessage `json:"error"` // a string in session.updated, {code, message} in error
+	Tools     []string        `json:"tools"` // session.updated: the names it registered
+	Response  struct {
+		Output []funcCall `json:"output"`
+	} `json:"response"` // response.done
+}
+
+// funcCall is a response.done output item; only type "function_call" ones are tool calls.
+type funcCall struct {
+	Type      string `json:"type"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // parse returns the event name and fields. The docs do not pin the name's key: it is tried as
@@ -500,7 +479,6 @@ func (s *Session) loop() {
 			if h.UserText != nil {
 				h.UserText(f.Text)
 			}
-			s.maybeHangUp(f.Text)
 		case "output.transcript.done":
 			s.addTurn("assistant", f.Text)
 			if h.AssistantText != nil {
@@ -515,6 +493,19 @@ func (s *Session) loop() {
 			}
 		case "response.interrupted":
 			s.run(f.RunID).cut = true
+		case "response.function_call_arguments.done":
+			s.log.Debug("moss: tool call announced", "bytes", len(b)) // run from response.done's output, so once
+		case "response.done":
+			// No TurnDone here: a tool-call round has no response.ended, the model answers after the outputs.
+			var calls []funcCall
+			for _, c := range f.Response.Output {
+				if c.Type == "function_call" {
+					calls = append(calls, c)
+				}
+			}
+			if len(calls) > 0 {
+				go s.runTools(calls) // the tools post to the session layer, which may be waiting on our handlers
+			}
 		case "response.ended":
 			if f.Status != "completed" {
 				s.log.Info("moss: response not completed", "status", f.Status)
@@ -627,22 +618,57 @@ func (s *Session) onStop(c ids) {
 	}
 }
 
-// maybeHangUp calls hang_up once per session when the user's final transcript asks for it; the
-// session layer waits for TurnDone so the model's goodbye still plays.
-func (s *Session) maybeHangUp(text string) {
-	if s.hungUp || s.cfg.Call == nil {
-		return
+// runTools runs one response's calls in parallel and sends every output. No response.create: MOSS
+// rejects it (invalid_public_request) and answers on its own once the outputs are in.
+func (s *Session) runTools(calls []funcCall) {
+	outs := make([]string, len(calls))
+	var wg sync.WaitGroup
+	for i, c := range calls {
+		wg.Go(func() { outs[i] = s.callTool(c.Name, stripSpoken(c.Arguments)) })
 	}
-	t := strings.Join(strings.Fields(text), "")
-	for _, w := range hangUpWords {
-		if strings.Contains(t, w) {
-			s.hungUp = true
-			go func() { // the tool posts to the session layer, which may be waiting on our handlers
-				ctx, cancel := context.WithTimeout(s.ctx, toolTimeout)
-				defer cancel()
-				s.cfg.Call(ctx, "hang_up", hangUpReason)
-			}()
+	wg.Wait()
+	for i, c := range calls {
+		if s.isClosed() {
 			return
 		}
+		if err := s.send(map[string]any{"action": "conversation.item.create", "item": map[string]any{
+			"type": "function_call_output", "call_id": c.CallID, "output": outs[i]}}); err != nil && !s.isClosed() {
+			s.log.Warn("moss: function_call_output not sent", "tool", c.Name, "err", err)
+		}
 	}
+}
+
+func (s *Session) callTool(name, args string) string {
+	if s.cfg.Call == nil {
+		return noToolsOutput
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, toolTimeout)
+	defer cancel()
+	res := make(chan string, 1)
+	go func() { res <- s.cfg.Call(ctx, name, args) }()
+	select {
+	case out := <-res:
+		return out
+	case <-ctx.Done():
+		s.log.Warn("moss: tool timeout", "tool", name)
+		return timeoutOutput
+	}
+}
+
+// stripSpoken drops the spoken_response key: our tools reject unknown arguments. Arguments that are
+// not a JSON object pass through unchanged for the tool to report.
+func stripSpoken(args string) string {
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(args), &m) != nil {
+		return args
+	}
+	if _, ok := m[spokenResponse]; !ok {
+		return args
+	}
+	delete(m, spokenResponse)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return args
+	}
+	return string(b)
 }
