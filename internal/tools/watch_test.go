@@ -238,6 +238,7 @@ func TestParseBox(t *testing.T) {
 		opts            []string
 	}{
 		{"capture_ask.txt", read("capture_ask.txt"), "午饭吃什么？", []string{"面条", "米饭", "饺子"}},
+		{"capture_ask_typed.txt", read("capture_ask_typed.txt"), "午饭吃什么？", []string{"面条", "米饭", "饺子"}}, // the user typing into "Type something." is not a new option
 		{"capture_plan.txt", read("capture_plan.txt"), "", []string{"Yes, and switch to BYPASS PERMISSIONS (no further prompts) for this session", "Yes, manually approve edits", "Tell Claude what to change"}},
 		{"second question", twoQuestions[1], "喝什么？", []string{"茶", "水", "可乐"}},
 		{"wrapped", " ☐ 缓存 \nWhich store should we\nuse for 会话缓存，还是\n先不加？\n❯ 1. Redis\n  2. Type something.\n", "Which store should we use for 会话缓存，还是先不加？", []string{"Redis"}},

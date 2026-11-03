@@ -60,6 +60,10 @@ func (s *server) onBlocked(b tools.Blocked) {
 		}
 		return
 	}
+	if s.pushOff {
+		s.log.Info("claude blocked, push off by phone", "block", b.Block, "project", b.Project)
+		return
+	}
 	now := time.Now()
 	if n, ok := s.notified[b.Block]; ok && n.msg == b.Msg && now.Sub(n.at) < notifyEvery {
 		s.log.Info("claude blocked, notify skipped: one sent recently", "block", b.Block, "project", b.Project)

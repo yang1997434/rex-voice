@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/net/websocket"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -110,6 +111,39 @@ func TestNextQuestionAsksAndNotifiesAgain(t *testing.T) {
 			case <-time.After(wait):
 				t.Fatalf("no notify for question %d", i+1)
 			}
+		}
+	})
+
+	// The phone's prefs push=false stops the notify (the ask card still arrives); push=true resumes it.
+	t.Run("prefs push off", func(t *testing.T) {
+		hub, rec := relay.NewHub(), &pushRecorder{pushes: make(chan string, 4)}
+		hub.Notifier = rec
+		var q atomic.Int32
+		e := startWith(t, false, "", hub, watch(&q))
+		ph := e.ready(t)
+		if err := websocket.Message.Send(ph.ws, `{"t":"push_token","token":"`+strings.Repeat("ab", 32)+`"}`); err != nil {
+			t.Fatal(err)
+		}
+		ph.ctl(t, map[string]any{"t": "prefs", "push": false})
+		time.Sleep(5 * watchEvery) // the prefs frame is read before the pane turns blocked
+		q.Store(1)
+		ph.ctlUntil(t, "ask")
+		select {
+		case title := <-rec.pushes:
+			t.Fatalf("pushed with push off: %q", title)
+		case <-time.After(5 * watchEvery):
+		}
+		ph.ctl(t, map[string]any{"t": "prefs", "push": true})
+		time.Sleep(5 * watchEvery)
+		q.Store(2)
+		ph.ctlUntil(t, "ask")
+		select {
+		case title := <-rec.pushes:
+			if !strings.Contains(title, "dev") {
+				t.Fatalf("push after push on: %q", title)
+			}
+		case <-time.After(wait):
+			t.Fatal("no push after push on")
 		}
 	})
 }

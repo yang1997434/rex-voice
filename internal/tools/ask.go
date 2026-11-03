@@ -12,9 +12,6 @@ const maxAskOptions = 6
 // optionLine matches a numbered choice row of a Claude Code box: "❯ 1. Yes…" (the cursor row) or "  2. No…".
 var optionLine = regexp.MustCompile(`^\s*(?:❯\s*)?([1-9])\.\s+(\S.*)$`)
 
-// askMeta are the rows Claude Code appends to every AskUserQuestion; they are UI, not answers.
-var askMeta = map[string]bool{"Type something.": true, "Chat about this": true}
-
 // ParseBox reads the box at the bottom of a captured Claude screen (AskUserQuestion, plan approval,
 // permission prompt; formats in testdata/capture_{ask,plan}.txt and twoQuestions in watch_test.go).
 // options[i] is picked by key i+1. The last run starting at "1." wins, so numbered lists in Claude's
@@ -54,9 +51,13 @@ func ParseBox(screen string) (question string, opts []string) {
 		above, gap = above[:0], false
 	}
 	ask := false
-	for len(opts) > 0 && askMeta[opts[len(opts)-1]] {
-		opts = opts[:len(opts)-1]
-		ask = true
+	if n := len(opts); n > 0 && opts[n-1] == "Chat about this" {
+		opts, ask = opts[:n-1], true
+	}
+	// The row above "Chat about this" is the free-text field: "Type something." until the user types
+	// into it, then whatever they typed so far (a changing "option" would re-notify every round).
+	if n := len(opts); n > 0 && (ask || opts[n-1] == "Type something.") {
+		opts, ask = opts[:n-1], true
 	}
 	if !ask {
 		question = ""

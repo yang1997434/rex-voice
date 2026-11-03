@@ -93,6 +93,7 @@ type server struct {
 	nextAttach uint32
 	notified   map[string]notice        // block -> last notify sent to the relay
 	asks       map[string]tools.Blocked // Claude panes blocked now; resent to the phone after every hello
+	pushOff    bool                     // the phone asked for no pushes (prefs); the ask card still goes out
 }
 
 // Run keeps the Mac connected to the relay and serves calls until ctx is done; it returns ctx.Err().
@@ -366,6 +367,7 @@ func (s *server) onControl(plain []byte) {
 		Block    string   `json:"block"`
 		Keys     []string `json:"keys"`
 		Text     string   `json:"text"`
+		Push     *bool    `json:"push"` // prefs
 		startReq
 	}
 	if err := json.Unmarshal(plain, &m); err != nil {
@@ -389,6 +391,11 @@ func (s *server) onControl(plain []byte) {
 		s.endCall("user")
 	case "answer":
 		s.answer(m.Block, m.Keys, m.Text)
+	case "prefs":
+		if m.Push != nil {
+			s.pushOff = !*m.Push
+			s.log.Info("phone prefs", "push", *m.Push)
+		}
 	default:
 		s.log.Debug("unknown control", "t", m.T)
 	}

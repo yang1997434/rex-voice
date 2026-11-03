@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.317
+▝▜██████▀  Fable 5.1 with high effort · Claude Ultra
+ ▝▝   ▝▝   /private/tmp/claude-501/asktest
+
+
+❯ 请立刻调用 AskUserQuestion 工具问我一个问题：「午饭吃什么？」，给三个选项：面 
+  条、米饭、饺子。不要做别的。                                                  
+────────────────────────────────────────────────────────────────────────────────
+ ☐ 午饭 
+
+午饭吃什么？
+
+  1. 面条
+     面条
+  2. 米饭
+     米饭                                                     
+  3. 饺子
+     饺子
+❯ 4. abc
+────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in Vim · Esc to cancel
