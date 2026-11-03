@@ -48,7 +48,7 @@ struct RexVoiceApp: App {
 
     #if DEBUG
     /// Screenshot drivers; each writes the real (persisted) setting, so a later plain launch shows it too.
-    /// `REXVOICE_PERSONA=<id>`, `REXVOICE_PROVIDER=openai|qwen|gemini|grok`, `REXVOICE_MODEL` / `REXVOICE_VOICE=<name>`,
+    /// `REXVOICE_PERSONA=<id>`, `REXVOICE_PROVIDER=openai|qwen|gemini|grok|moss`, `REXVOICE_MODEL` / `REXVOICE_VOICE=<name>`,
     /// `REXVOICE_KEY=<key>` saves a key for the provider (`-` deletes it).
     private static func applyPreviewSettings(_ s: AppSettings) {
         let env = ProcessInfo.processInfo.environment

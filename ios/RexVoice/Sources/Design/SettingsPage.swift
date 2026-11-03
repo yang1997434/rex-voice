@@ -278,43 +278,46 @@ struct SettingsPage: View {
                 }
             }
 
-            HStack(spacing: 12) {
-                subhead("音色", trailing: provider.totalVoices.map { "共 \($0) 种，列出常用 \(voices.count) 种" } ?? "\(voices.count) 种")
-                previewButton
-            }
-            if case let .failed(reason) = controller.previewState {
-                Text("试听失败：\(reason)")
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
-            } else if controller.inCall {
-                Text("通话中不能试听").font(.footnote).foregroundStyle(.secondary)
-            }
-            VStack(spacing: 0) {
-                // Grok's list is grouped by gender (女声 / 男声 / not labelled); the others have no gender data.
-                let groups = Dictionary(grouping: voices) { $0.gender ?? "" }
-                let order = provider == .grok ? ["女声", "男声", ""] : [""]
-                ForEach(order, id: \.self) { g in
-                    if provider == .grok {
-                        Text(g.isEmpty ? "未标性别" : g)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12)
-                            .padding(.top, 10)
-                            .padding(.bottom, 2)
-                    }
-                    ForEach(groups[g] ?? []) { v in
-                        choiceRow(selected: v.value == voice) { settings.setVoice(v.value, for: provider) } label: {
-                            Text(v.name).font(.callout.weight(.semibold))
+            // MOSS-Live has no voices to pick and no text input for the Mac to preview with.
+            if provider != .moss {
+                HStack(spacing: 12) {
+                    subhead("音色", trailing: provider.totalVoices.map { "共 \($0) 种，列出常用 \(voices.count) 种" } ?? "\(voices.count) 种")
+                    previewButton
+                }
+                if case let .failed(reason) = controller.previewState {
+                    Text("试听失败：\(reason)")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                } else if controller.inCall {
+                    Text("通话中不能试听").font(.footnote).foregroundStyle(.secondary)
+                }
+                VStack(spacing: 0) {
+                    // Grok's list is grouped by gender (女声 / 男声 / not labelled); the others have no gender data.
+                    let groups = Dictionary(grouping: voices) { $0.gender ?? "" }
+                    let order = provider == .grok ? ["女声", "男声", ""] : [""]
+                    ForEach(order, id: \.self) { g in
+                        if provider == .grok {
+                            Text(g.isEmpty ? "未标性别" : g)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .padding(.top, 10)
+                                .padding(.bottom, 2)
+                        }
+                        ForEach(groups[g] ?? []) { v in
+                            choiceRow(selected: v.value == voice) { settings.setVoice(v.value, for: provider) } label: {
+                                Text(v.name).font(.callout.weight(.semibold))
+                            }
                         }
                     }
+                    customRow(selected: customVoice, value: customVoice ? voice : nil, empty: "填音色名") {
+                        customDraft = customVoice ? voice : ""
+                        custom = .voice
+                    }
+                    .id("custom")
                 }
-                customRow(selected: customVoice, value: customVoice ? voice : nil, empty: "填音色名") {
-                    customDraft = customVoice ? voice : ""
-                    custom = .voice
-                }
-                .id("custom")
             }
         }
     }
