@@ -75,8 +75,6 @@ final class CallController {
 
     @ObservationIgnored private let audio = AudioEngine()
     @ObservationIgnored private let settings: AppSettings
-    /// The `call.start` of the running call, resent as-is after a reconnect. Holds the API key only for the call.
-    @ObservationIgnored private var startMessage: ControlMessage?
     @ObservationIgnored private var relay: RelayClient?
     @ObservationIgnored private var eventsTask: Task<Void, Never>?
     @ObservationIgnored private var uplinkTask: Task<Void, Never>?
@@ -85,6 +83,8 @@ final class CallController {
     @ObservationIgnored private var previewTimer: Task<Void, Never>?
     /// 5 s cap on playing out the goodbye after `hang_up`.
     @ObservationIgnored private var hangUpTimer: Task<Void, Never>?
+    /// 5 s wait, after a reconnect mid-call, for the `status` the Mac sends after every hello (ended = no call there).
+    @ObservationIgnored private var resumeTimer: Task<Void, Never>?
     @ObservationIgnored private var pushToken: String?
     /// Images being received: `attach` control first, then its type 4 chunks; dropped after 20 s.
     private struct PendingAttach {
@@ -278,19 +278,19 @@ final class CallController {
         callState = "connecting"
         transcript = []
         attachments = []
-        startMessage = start
         await relay.send(start)
     }
 
     private func endCall(notice: String?) {
         hangUpTimer?.cancel()
         hangUpTimer = nil
+        resumeTimer?.cancel()
+        resumeTimer = nil
         uplinkTask?.cancel()
         uplinkTask = nil
         audio.stop()
         inCall = false
         callState = ""
-        startMessage = nil
         if let notice { self.notice = notice }
     }
 
@@ -332,8 +332,16 @@ final class CallController {
             link = .ready
             asks = [] // the Mac resends every still-open ask right after this hello
             sendPrefs()
-            // The Mac keeps a call across a phone reconnect; call.start is idempotent there.
-            if inCall, let relay, let startMessage { Task { await relay.send(startMessage) } }
+            // Never resend call.start: a socket that died while locked missed the Mac's hang_up, and resending
+            // restarted the call on its own. The Mac's status after this hello says whether the call is still there.
+            if inCall {
+                resumeTimer?.cancel()
+                resumeTimer = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(5))
+                    guard !Task.isCancelled else { return }
+                    self?.endCall(notice: "连上了，但 Mac 上没有通话")
+                }
+            }
         case .inviteRejected:
             link = .connecting
             notice = "中继要邀请码，请在 Mac 上重新 pair 后扫码"
@@ -389,7 +397,13 @@ final class CallController {
     private func onControl(_ m: ControlMessage) {
         switch m {
         case let .status(state, _):
-            if inCall, state != "ended" { callState = state }
+            if let waiting = resumeTimer {
+                waiting.cancel()
+                resumeTimer = nil
+                if state == "ended" { endCall(notice: "Mac 上的通话已结束") } else { callState = state }
+            } else if inCall, state != "ended" {
+                callState = state // a plain ended waits for hang_up, which plays out the goodbye
+            }
         case let .transcript(who, text):
             transcript.append(Line(fromUser: who == "user", text: text))
         case .interrupt:
@@ -401,7 +415,6 @@ final class CallController {
             case "error": "通话出错，已挂断"
             default: "已挂断（\(reason)）"
             }
-            startMessage = nil // the Mac ended it: a reconnect during the drain must not restart the call
             // Play out the goodbye first; whichever of drain / 5 s comes first ends the call (endCall cancels both).
             hangUpTimer?.cancel()
             hangUpTimer = Task { [weak self] in
@@ -583,11 +596,15 @@ extension CallController {
         print(failures.isEmpty ? "[selftest] PASS" : "[selftest] FAIL: \(failures.joined(separator: "; "))")
     }
 
-    /// `REXVOICE_SELFTEST=call`: hang-up plays out the queue, image chunks assemble, a missing chunk times out,
-    /// links are kept. Real AudioEngine (playback only), no relay. Leaves the attachments on screen for a screenshot.
+    /// `REXVOICE_SELFTEST=call`: hang-up plays out the queue, a reconnect mid-call follows the Mac's status, image
+    /// chunks assemble, a missing chunk times out, links are kept. Real AudioEngine (playback only), no relay.
+    /// Leaves the attachments on screen for a screenshot.
     func callSelfTest() async {
         var failures: [String] = []
-        func check(_ ok: Bool, _ what: String) { if !ok { failures.append(what) } }
+        func check(_ ok: Bool, _ what: String) {
+            print("[selftest] \(ok ? "ok" : "FAIL"): \(what)")
+            if !ok { failures.append(what) }
+        }
         func wait(_ seconds: Double, until done: () -> Bool) async {
             let end = Date().addingTimeInterval(seconds)
             while !done(), Date() < end { try? await Task.sleep(for: .milliseconds(50)) }
@@ -613,6 +630,22 @@ extension CallController {
         handle(.failed("连接断开：操作无法完成"))
         check(notice == "连接断开：操作无法完成", "failed in a call: notice")
         inCall = false
+        notice = nil
+
+        // Reconnect mid-call: the Mac's status after hello decides; call.start is never resent.
+        inCall = true
+        handle(.ready)
+        handle(.control(.status(state: "ended", detail: nil)))
+        check(!inCall && (notice?.contains("没有通话") == true || notice?.contains("已结束") == true),
+              "reconnect + status ended -> call ends")
+        notice = nil
+        inCall = true
+        handle(.ready)
+        handle(.control(.status(state: "listening", detail: nil)))
+        check(inCall && callState == "listening", "reconnect + status listening -> call goes on")
+        handle(.control(.status(state: "ended", detail: nil)))
+        check(inCall, "status ended outside a reconnect waits for hang_up")
+        endCall(notice: nil)
         notice = nil
 
         // Image: three chunks out of order -> one attachment.

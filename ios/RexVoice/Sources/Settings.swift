@@ -41,7 +41,7 @@ final class AppSettings {
     static let personaKey = "persona"
 
     init() {
-        provider = defaults.string(forKey: "provider").flatMap(VoiceProvider.init(rawValue:)) ?? .openai
+        provider = defaults.string(forKey: "provider").flatMap(VoiceProvider.init(rawValue:)) ?? .qwen // a removed provider (openai / gemini / moss, 0.3.7) falls back here
         personaID = defaults.string(forKey: Self.personaKey) ?? ""
         name = defaults.string(forKey: "name") ?? ""
         pushEnabled = defaults.object(forKey: "push.enabled") as? Bool ?? true
@@ -213,38 +213,28 @@ struct VoiceOption: Identifiable, Hashable {
 }
 
 enum VoiceProvider: String, CaseIterable, Identifiable {
-    case grok, qwen, openai, gemini, moss // display order (settings grid, wheel); only the raw value is stored
+    case grok, qwen // display order (settings grid, wheel); only the raw value is stored
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .openai: "OpenAI"
         case .qwen: "千问"
-        case .gemini: "Gemini"
         case .grok: "Grok"
-        case .moss: "MOSS"
         }
     }
 
     /// Short name under the rail logo, on the wheel and in the settings grid.
     var shortName: String {
         switch self {
-        case .openai: "GPT"
         case .qwen: "千问"
-        case .gemini: "Gemini"
         case .grok: "Grok"
-        case .moss: "MOSS"
         }
     }
 
     var brand: LinearGradient {
         let colors: [Color] = switch self {
-        case .openai: [Color(red: 0.06, green: 0.64, blue: 0.5), Color(red: 0.03, green: 0.45, blue: 0.36)]
         case .qwen: [Color(red: 0.43, green: 0.36, blue: 0.98), Color(red: 0.31, green: 0.24, blue: 0.85)]
-        case .gemini: [Color(red: 0.26, green: 0.52, blue: 0.96), Color(red: 0.61, green: 0.4, blue: 0.95)]
         case .grok: [Color(white: 0.22), Color(white: 0.05)]
-        // platform.moss.cn's own primary is a neutral #0f0f0f, which would read as Grok; deep blue to indigo instead.
-        case .moss: [Color(red: 0.12, green: 0.23, blue: 0.62), Color(red: 0.36, green: 0.22, blue: 0.75)]
         }
         return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
@@ -252,17 +242,11 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
     /// First entry is the default (same as the Mac's `voice.Defaults`).
     var models: [String] {
         switch self {
-        case .openai: ["gpt-realtime-2.1", "gpt-realtime-2.1-mini", "gpt-live-1"]
         case .qwen: ["qwen-audio-3.1-realtime-plus", "qwen3.8-omni-flash-realtime", "qwen-audio-3.1-realtime-flash",
                      "qwen3.5-omni-plus-realtime"]
-        case .gemini: ["gemini-3.8-live", "gemini-3.8-live-extended-thinking"]
         case .grok: ["grok-voice-3.0"]
-        case .moss: ["moss-live-1.0"]
         }
     }
-
-    /// How many voices the provider has in all, when the list below is only the common ones.
-    var totalVoices: Int? { self == .gemini ? 30 : nil }
 
     /// Voices for a model; first entry is the default. Qwen's qwen-audio-3.1 models have their own set (Mac 0770c9d).
     func voices(model: String) -> [VoiceOption] {
@@ -270,17 +254,11 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
             VoiceOption(name: name ?? value, value: value, gender: gender)
         }
         switch self {
-        case .openai:
-            return ["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]
-                .map { v($0, $0.capitalized) }
         case .qwen where model.hasPrefix("qwen-audio-3.1"):
             return ["longanqian", "longanlingxi", "longanfengyue", "luna_v3.1", "emily_v3.1", "andy_v3.1", "eric_v3.1",
                     "libai_v3.1"].map { v($0) }
         case .qwen:
             return ["Tina", "Liora Mira", "Raymond", "Ryan", "Mia", "Serena", "Evan", "Momo", "Zane", "Cici"].map { v($0) }
-        case .gemini:
-            return ["Kore", "Puck", "Charon", "Fenrir", "Leda", "Orus", "Aoede", "Zephyr", "Callirrhoe", "Despina", "Achird",
-                    "Sulafat"].map { v($0) }
         case .grok:
             // GET /v1/tts/voices, 2026-11-01: 28 ids. Gender is only known for the 14 named in the research notes.
             let female = ["ara", "eve", "aurora", "carina", "celeste", "iris", "liora", "luna"]
@@ -289,8 +267,6 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
                          "ursa", "zagan", "zenith"]
             return female.map { v($0, $0.capitalized, "女声") } + male.map { v($0, $0.capitalized, "男声") }
                 + other.map { v($0, $0.capitalized) }
-        case .moss:
-            return [v("default")] // MOSS-Live has no voice choice; the Mac ignores it. Never empty: `voice(for:)` takes [0].
         }
     }
 }
