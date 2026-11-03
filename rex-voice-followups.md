@@ -84,3 +84,8 @@
 - [已做] 0.3.4（build 202611021415，commit a09034a）：锁屏点通知崩溃（通知代理回调改主线程隔离，记忆 ios-notification-delegate-nonisolated-crash）；多题每题都推、题干与选项同一次截屏、Submit 页题目「提交答案？」；邀请码打码；设置页「千问」。Mac 安装包 v0.3.4 挂在 GitHub Releases；朋友上手流程 docs/getting-started.md。
 - [ ] 真机验：0.3.4 锁屏点通知不崩；连问两题每题一张卡、题目选项对得上；内屏竖栏对齐。
 - [ ] Rex 下载地址：getting-started.md 里写「向分享人要」，确定官方地址后补上。
+
+## MOSS-Live（2026-11-02 调研，用户定先不接）
+
+- 模思智能 11-02 发布的全双工实时语音，闭源、只有云 API（`wss://api.mosi.cn/v1/realtime?model=moss-live-1.0`），限时免费。协议和 `voice.Session` 接口能对上（16k 上行 / 48k 下行 PCM、`mic_state`、`response.interrupted`、播放回执），但 API 没有开发者 tools、没有文字输入事件，所以接进来只能「听和聊」，不能操作 Rex。
+- 用户 11-02 定：先自己在 playground 玩，不接。接入条件：它开放 tools（或文字输入）。到时按「第 5 家 provider + 手机轮盘第 5 家」做，开场把窗格快照塞 `instructions`（≤8000 字）。文档：https://platform.moss.cn/docs/reference/moss-live
