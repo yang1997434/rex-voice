@@ -2,6 +2,7 @@ package qwen
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -105,7 +106,7 @@ func dial(ctx context.Context, cfg voice.Config) (*Session, error) {
 	case region == "cn":
 		urls = []string{endpoints[0]}
 	default:
-		urls, hint = endpoints, "（两个地域都连不上：key 不对，或在 Extra workspace 填百炼业务空间 ID 改走新端点）"
+		urls, hint = preferLast(cfg.Key, endpoints), "（两个地域都连不上：key 不对，或在 Extra workspace 填百炼业务空间 ID 改走新端点）"
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -123,6 +124,7 @@ func dial(ctx context.Context, cfg voice.Config) (*Session, error) {
 		wc.Header.Set("User-Agent", "rex-voiced/"+cfg.Version)
 		if ws, err = wc.DialContext(ctx); err == nil {
 			log.Info("qwen: connected", "endpoint", u)
+			remember(cfg.Key, u)
 			break
 		}
 		log.Info("qwen: dial failed, trying next endpoint", "endpoint", u, "err", err)
@@ -191,6 +193,39 @@ func (s *Session) sessionConfig() map[string]any {
 		c["input_audio_transcription"] = nil // the server turns a default transcriber on otherwise
 	}
 	return c
+}
+
+// lastGood is the endpoint that accepted a key (by its hash), so the next call does not pay the
+// other region's refusal again (11-03: an international key lost ~1.2 s on Beijing every call).
+var (
+	lastMu   sync.Mutex
+	lastGood = map[[sha256.Size]byte]string{}
+)
+
+func remember(key, u string) {
+	lastMu.Lock()
+	lastGood[sha256.Sum256([]byte(key))] = u
+	lastMu.Unlock()
+}
+
+// preferLast moves the endpoint remembered for key to the front of urls; unknown or absent: urls as is.
+func preferLast(key string, urls []string) []string {
+	lastMu.Lock()
+	u, ok := lastGood[sha256.Sum256([]byte(key))]
+	lastMu.Unlock()
+	if !ok || len(urls) == 0 || urls[0] == u {
+		return urls
+	}
+	out := []string{u}
+	for _, x := range urls {
+		if x != u {
+			out = append(out, x)
+		}
+	}
+	if len(out) == len(urls)+1 { // not one of ours (tests swap endpoints): ignore it
+		return urls
+	}
+	return out
 }
 
 // turnDetection picks the VAD the model accepts: qwen-audio-3.1 rejects semantic_vad and offers
