@@ -6,6 +6,7 @@ package moss
 // knows how much of an interrupted answer was heard.
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/binary"
@@ -80,6 +81,7 @@ type ids struct {
 }
 
 type chunk struct {
+	id    json.RawMessage
 	start time.Time
 	dur   time.Duration
 	t     *time.Timer
@@ -333,6 +335,7 @@ func (s *Session) send(ev map[string]any) error {
 	if err != nil {
 		return err
 	}
+	s.log.Debug("moss: send", "action", ev["action"])
 	return s.write(string(b))
 }
 
@@ -389,6 +392,9 @@ func readFrame(ws *websocket.Conn) (byte, []byte, error) {
 			return 0, nil, err
 		}
 		if fr != nil {
+			// MOSS fragments an audio chunk over several frames: HandleFrame gives a continuation
+			// frame the opcode of the message it belongs to (11-03 实测，看之前的类型会把它当文本解析).
+			typ = fr.PayloadType()
 			b, err := io.ReadAll(io.LimitReader(fr, websocket.DefaultMaxPayloadBytes))
 			return typ, b, err
 		}
@@ -519,9 +525,10 @@ func (s *Session) run(id json.RawMessage) *run {
 }
 
 // onAudio plays one downlink frame: 48 kHz from MOSS, 24 kHz to the session layer.
+// onAudio handles one binary frame; a chunk may span several (fragments), so cur stays until
+// the next response.audio.context.
 func (s *Session) onAudio(b []byte) {
 	c := s.cur
-	s.cur = nil
 	if c == nil {
 		s.log.Warn("moss: audio frame without response.audio.context, dropped", "bytes", len(b))
 		return
@@ -535,6 +542,7 @@ func (s *Session) onAudio(b []byte) {
 		s.log.Warn("moss: bad audio frame", "bytes", len(b), "err", err)
 		return
 	}
+	s.log.Debug("moss: audio", "chunk", string(c.ChunkID), "bytes", len(b))
 	s.schedule(r, *c, len(b))
 	if h := s.cfg.Handlers.AudioDelta; h != nil {
 		h(pcm)
@@ -550,11 +558,19 @@ func (s *Session) schedule(r *run, c ids, n int) {
 		start = s.clock
 	}
 	dur := time.Duration(float64(n) / bytesPerMs * float64(time.Millisecond))
+	if k := len(r.chunks) - 1; k >= 0 && bytes.Equal(r.chunks[k].id, c.ChunkID) && r.chunks[k].t.Stop() {
+		// another fragment of the chunk whose receipt is still pending: one receipt, later
+		ch := &r.chunks[k]
+		ch.dur += dur
+		s.clock, r.end = s.clock.Add(dur), r.end.Add(dur)
+		ch.t.Reset(r.end.Sub(now))
+		return
+	}
 	s.clock, r.end = start.Add(dur), start.Add(dur)
 	t := time.AfterFunc(r.end.Sub(now), func() {
 		s.sendLater(map[string]any{"action": "playback.chunk.completed", "chunk_id": c.ChunkID, "run_id": c.RunID, "turn_id": c.TurnID})
 	})
-	r.chunks = append(r.chunks, chunk{start, dur, t})
+	r.chunks = append(r.chunks, chunk{c.ChunkID, start, dur, t})
 }
 
 // onAudioDone sends playback.completed when the run's last chunk should have finished.

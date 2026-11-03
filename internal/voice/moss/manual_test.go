@@ -26,6 +26,7 @@ type rawPrinter struct {
 	t  *testing.T
 	mu sync.Mutex
 	n  int
+	t0 time.Time
 }
 
 const maxRaw = 40
@@ -36,15 +37,21 @@ func (p *rawPrinter) WithGroup(string) slog.Handler            { return p }
 func (p *rawPrinter) Handle(_ context.Context, r slog.Record) error {
 	var attrs []string
 	r.Attrs(func(a slog.Attr) bool { attrs = append(attrs, a.String()); return true })
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.t0.IsZero() {
+		p.t0 = time.Now()
+	}
+	ms := time.Since(p.t0).Milliseconds()
 	switch {
 	case r.Message == "moss: raw":
-		p.mu.Lock()
-		defer p.mu.Unlock()
 		if p.n++; p.n <= maxRaw {
-			p.t.Logf("[raw %d] %s", p.n, strings.Join(attrs, " "))
+			p.t.Logf("[%5d ms raw %d] %s", ms, p.n, strings.Join(attrs, " "))
 		}
+	case r.Message == "moss: send" || r.Message == "moss: audio":
+		p.t.Logf("[%5d ms] %s %s", ms, r.Message, strings.Join(attrs, " "))
 	case r.Level > slog.LevelDebug:
-		p.t.Logf("[log] %s %s", r.Message, strings.Join(attrs, " "))
+		p.t.Logf("[%5d ms log] %s %s", ms, r.Message, strings.Join(attrs, " "))
 	}
 	return nil
 }

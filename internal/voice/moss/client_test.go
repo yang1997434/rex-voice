@@ -3,7 +3,10 @@ package moss
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -424,5 +427,73 @@ func TestServerError(t *testing.T) {
 	f.push(t, `{"type":"error","data":{"error":{"code":"rate_limited","message":"slow down"}}}`)
 	if e := wait(t, errs, "Error"); e.Error() != "moss: rate_limited: slow down" {
 		t.Errorf("err = %v", e)
+	}
+}
+
+// MOSS fragments an audio chunk over several WebSocket frames: every fragment must come back as
+// a binary frame (x/net only types the continuation after HandleFrame). Raw frames need a raw
+// server: the handler hijacks the connection and writes the handshake and frames by hand.
+func TestReadFrameFragmented(t *testing.T) {
+	hold := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, bw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer c.Close()
+		sum := sha1.Sum([]byte(r.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+		fmt.Fprintf(bw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
+			base64.StdEncoding.EncodeToString(sum[:]))
+		bw.Write([]byte{0x81, 2, '{', '}'}) // text, FIN
+		bw.Write([]byte{0x02, 3, 1, 2, 3})  // binary, no FIN
+		bw.Write([]byte{0x80, 2, 4, 5})     // continuation, FIN
+		bw.Write([]byte{0x81, 2, '[', ']'}) // text, FIN
+		bw.Flush()
+		<-hold
+	}))
+	t.Cleanup(func() { close(hold); srv.Close() })
+	ws, err := websocket.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), "", "http://localhost/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	for i, want := range []struct {
+		typ byte
+		b   []byte
+	}{{websocket.TextFrame, []byte("{}")}, {websocket.BinaryFrame, []byte{1, 2, 3}}, {websocket.BinaryFrame, []byte{4, 5}}, {websocket.TextFrame, []byte("[]")}} {
+		typ, b, err := readFrame(ws)
+		if err != nil || typ != want.typ || !bytes.Equal(b, want.b) {
+			t.Fatalf("frame %d = type %d %v %v, want type %d %v", i, typ, b, err, want.typ, want.b)
+		}
+	}
+}
+
+// Two binary frames after one context are fragments of one chunk: both play, one receipt, after both.
+func TestAudioFragmentsOneReceipt(t *testing.T) {
+	setVar(t, &bytesPerMs, 96) // 1920 bytes = 20 ms
+	f := newFake(t)
+	audio := make(chan int, 4)
+	f.dial(t, voice.Config{Handlers: voice.Handlers{AudioDelta: func(pcm []byte) { audio <- len(pcm) }}})
+	f.push(t, `{"type":"response.audio.context","data":{"chunk_id":7,"run_id":"r1","turn_id":3}}`)
+	f.pushBin(t, make([]byte, 1920))
+	f.pushBin(t, make([]byte, 1920))
+	if n := wait(t, audio, "fragment 1"); n != 960 {
+		t.Errorf("fragment 1 = %d bytes", n)
+	}
+	if n := wait(t, audio, "fragment 2"); n != 960 {
+		t.Errorf("fragment 2 = %d bytes", n)
+	}
+	t0 := time.Now()
+	if ev := f.next(t); js(ev) != `{"action":"playback.chunk.completed","chunk_id":7,"run_id":"r1","turn_id":3}` {
+		t.Fatalf("want one chunk receipt, got %s", js(ev))
+	}
+	if d := time.Since(t0); d < 30*time.Millisecond {
+		t.Errorf("receipt after %v, want after both fragments (40 ms)", d)
+	}
+	select {
+	case ev := <-f.got:
+		t.Fatalf("second receipt for the same chunk: %s", js(ev))
+	case <-time.After(100 * time.Millisecond):
 	}
 }
