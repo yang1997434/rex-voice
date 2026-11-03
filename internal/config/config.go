@@ -15,7 +15,7 @@ import (
 
 type Config struct {
 	Name           string            `json:"name,omitempty"`            // how the model addresses the user
-	Provider       string            `json:"provider,omitempty"`        // realtime voice provider: openai | qwen | gemini | grok | moss
+	Provider       string            `json:"provider,omitempty"`        // realtime voice provider: qwen | grok
 	Model          string            `json:"model,omitempty"`           // provider's model; empty = the provider's default
 	Relay          string            `json:"relay,omitempty"`           // relay WebSocket URL
 	Invite         string            `json:"invite,omitempty"`          // relay invite code (RELAY_INVITES); empty = none sent
@@ -25,7 +25,7 @@ type Config struct {
 }
 
 const (
-	DefaultProvider = "openai"
+	DefaultProvider = "qwen" // 2026-11-03 用户撤下 openai / gemini / moss，只留 qwen 和 grok
 	DefaultRelay    = "wss://r.maruiao.top/_voice/ws"
 	fileName        = "config.json"
 )
@@ -162,7 +162,7 @@ func (k Keychain) Delete() error {
 }
 
 // keyEnv is the environment variable that overrides the Keychain, per provider.
-var keyEnv = map[string]string{"openai": "OPENAI_API_KEY", "qwen": "DASHSCOPE_API_KEY", "gemini": "GEMINI_API_KEY", "grok": "XAI_API_KEY", "moss": "MOSS_API_KEY"}
+var keyEnv = map[string]string{"qwen": "DASHSCOPE_API_KEY", "grok": "XAI_API_KEY"}
 
 // KeyEnv is provider p's API key environment variable; empty for an unknown provider.
 func KeyEnv(p string) string { return keyEnv[p] }

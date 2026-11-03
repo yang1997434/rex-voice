@@ -166,7 +166,7 @@ func uninstall(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	fmt.Printf("已停掉并删除 %s。配置和配对还在 %s；钥匙串里的 key 要删就运行 security delete-generic-password -s rex-voice -a <openai|qwen|gemini|grok|moss>\n", launchLabel, dir)
+	fmt.Printf("已停掉并删除 %s。配置和配对还在 %s；钥匙串里的 key 要删就运行 security delete-generic-password -s rex-voice -a <qwen|grok>\n", launchLabel, dir)
 	return 0
 }
 

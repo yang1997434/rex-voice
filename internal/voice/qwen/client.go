@@ -450,9 +450,36 @@ func (s *Session) onResponseDone(ev event) {
 		Status string          `json:"status"`
 		Detail json.RawMessage `json:"status_details"`
 		Usage  rawUsage        `json:"usage"`
+		Output []struct {
+			Type      string `json:"type"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"output"`
 	}
 	if err := json.Unmarshal(ev.Response, &r); err != nil {
 		s.log.Warn("qwen: bad response.done", "err", err)
+	}
+	// 11-03 真机（qwen3.8）：function_call_arguments.done 偶尔带截断的 arguments，也见过只说「我这就关」却没有
+	// 任何 .done 事件；response.done 的 output 里的 function_call 项是完整的，以它为准补齐 / 替换。
+	for _, o := range r.Output {
+		if o.Type != "function_call" || o.CallID == "" {
+			continue
+		}
+		seen := false
+		for i, c := range s.pending[r.ID] {
+			if c.callID == o.CallID {
+				seen = true
+				if !json.Valid([]byte(c.args)) && json.Valid([]byte(o.Arguments)) {
+					s.log.Info("qwen: arguments.done was truncated, using response.done", "tool", o.Name)
+					s.pending[r.ID][i].args = o.Arguments
+				}
+			}
+		}
+		if !seen {
+			s.log.Info("qwen: function_call only in response.done", "tool", o.Name)
+			s.pending[r.ID] = append(s.pending[r.ID], funcCall{o.CallID, o.Name, o.Arguments})
+		}
 	}
 	if r.Status != "" && r.Status != "completed" {
 		s.log.Info("qwen: response not completed", "status", r.Status, "details", string(r.Detail))

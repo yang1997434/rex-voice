@@ -67,7 +67,7 @@ type fakeSecurity struct {
 }
 
 func (f *fakeSecurity) kc() Keychain {
-	return Keychain{Service: "rex-voice", Account: "openai", Exec: func(stdin string, args ...string) ([]byte, error) {
+	return Keychain{Service: "rex-voice", Account: "qwen", Exec: func(stdin string, args ...string) ([]byte, error) {
 		f.calls = append(f.calls, strings.Join(args, " ")+"|"+stdin)
 		return []byte(f.out), f.err
 	}}
@@ -77,38 +77,38 @@ func env(m map[string]string) func(string) string { return func(k string) string
 
 func TestProviderKeyEnvFirst(t *testing.T) {
 	f := &fakeSecurity{out: "key-from-keychain\n"}
-	key, src, err := ProviderKey(env(map[string]string{"OPENAI_API_KEY": "key-from-env"}), f.kc(), "openai")
+	key, src, err := ProviderKey(env(map[string]string{"DASHSCOPE_API_KEY": "key-from-env"}), f.kc(), "qwen")
 	if err != nil || key != "key-from-env" || src != "env" || len(f.calls) != 0 {
 		t.Fatalf("key=%q src=%q err=%v calls=%v", key, src, err, f.calls)
 	}
-	// another provider's env name; OPENAI_API_KEY must not leak into it
-	key, src, _ = ProviderKey(env(map[string]string{"OPENAI_API_KEY": "o", "DASHSCOPE_API_KEY": "q"}), f.kc(), "qwen")
-	if key != "q" || src != "env" {
-		t.Fatalf("qwen key=%q src=%q", key, src)
+	// another provider's env name; DASHSCOPE_API_KEY must not leak into it
+	key, src, _ = ProviderKey(env(map[string]string{"DASHSCOPE_API_KEY": "q", "XAI_API_KEY": "x"}), f.kc(), "grok")
+	if key != "x" || src != "env" {
+		t.Fatalf("grok key=%q src=%q", key, src)
 	}
 }
 
 func TestProviderKeyFromKeychain(t *testing.T) {
 	f := &fakeSecurity{out: "key-from-keychain\n"}
-	key, src, err := ProviderKey(env(nil), f.kc(), "openai")
+	key, src, err := ProviderKey(env(nil), f.kc(), "qwen")
 	if err != nil || key != "key-from-keychain" || src != "keychain" {
 		t.Fatalf("key=%q src=%q err=%v", key, src, err)
 	}
-	if len(f.calls) != 1 || f.calls[0] != "find-generic-password -s rex-voice -a openai -w|" {
+	if len(f.calls) != 1 || f.calls[0] != "find-generic-password -s rex-voice -a qwen -w|" {
 		t.Fatalf("calls = %v", f.calls)
 	}
 }
 
 func TestProviderKeyMissingPointsToSetup(t *testing.T) {
 	f := &fakeSecurity{err: ErrNotFound}
-	if _, _, err := ProviderKey(env(nil), f.kc(), "openai"); err == nil || !strings.Contains(err.Error(), "setup") {
+	if _, _, err := ProviderKey(env(nil), f.kc(), "qwen"); err == nil || !strings.Contains(err.Error(), "setup") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestProviderKeyKeychainErrorNotHidden(t *testing.T) {
 	f := &fakeSecurity{err: errors.New("security find-generic-password: User interaction is not allowed")}
-	if _, _, err := ProviderKey(env(nil), f.kc(), "openai"); err == nil || !strings.Contains(err.Error(), "User interaction") {
+	if _, _, err := ProviderKey(env(nil), f.kc(), "qwen"); err == nil || !strings.Contains(err.Error(), "User interaction") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -118,7 +118,7 @@ func TestKeychainSetUsesStdin(t *testing.T) {
 	if err := f.kc().Set("abc_123-x"); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) != 1 || f.calls[0] != "-i|add-generic-password -U -s \"rex-voice\" -a \"openai\" -w \"abc_123-x\"\n" {
+	if len(f.calls) != 1 || f.calls[0] != "-i|add-generic-password -U -s \"rex-voice\" -a \"qwen\" -w \"abc_123-x\"\n" {
 		t.Fatalf("calls = %q", f.calls)
 	}
 	for _, bad := range []string{"", "k x", `k"x`, "k\nx"} {

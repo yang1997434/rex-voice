@@ -423,6 +423,8 @@ func (s *server) onHello(deviceID, app, device string) {
 	s.log.Info("phone hello", "app", app, "device", device)
 	if c := s.call; c != nil { // phone reconnected mid-call
 		s.sendCtl(map[string]any{"t": "status", "state": c.state})
+	} else { // a phone that still thinks it is in a call (it missed hang_up while locked) must not restart it
+		s.sendCtl(map[string]any{"t": "status", "state": "ended"})
 	}
 	for _, b := range s.asks {
 		s.sendAsk(b)

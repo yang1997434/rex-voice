@@ -18,11 +18,8 @@ import (
 	"github.com/yang1997434/rex-voice/internal/pair"
 	"github.com/yang1997434/rex-voice/internal/tools"
 	"github.com/yang1997434/rex-voice/internal/voice"
-	_ "github.com/yang1997434/rex-voice/internal/voice/gemini" // registers provider "gemini"
-	_ "github.com/yang1997434/rex-voice/internal/voice/grok"   // registers provider "grok"
-	_ "github.com/yang1997434/rex-voice/internal/voice/moss"   // registers provider "moss"
-	_ "github.com/yang1997434/rex-voice/internal/voice/openai" // registers provider "openai"
-	_ "github.com/yang1997434/rex-voice/internal/voice/qwen"   // registers provider "qwen"
+	_ "github.com/yang1997434/rex-voice/internal/voice/grok" // registers provider "grok"
+	_ "github.com/yang1997434/rex-voice/internal/voice/qwen" // registers provider "qwen"; openai / gemini / moss 2026-11-03 用户撤下，包还在、没注册
 )
 
 func serve(args []string) int {

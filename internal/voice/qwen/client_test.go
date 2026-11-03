@@ -16,6 +16,8 @@ import (
 
 	"github.com/yang1997434/rex-voice/internal/tools"
 	"github.com/yang1997434/rex-voice/internal/voice"
+	"slices"
+	"sort"
 )
 
 const testModel = "qwen3.8-omni-flash-realtime"
@@ -322,6 +324,45 @@ func TestToolBatchOneCreate(t *testing.T) {
 	}
 	f.push(t, `{"type":"response.done","response":{"id":"r2","status":"completed"}}`)
 	wait(t, turn, "TurnDone")
+}
+
+// 11-03 真机（qwen3.8）：arguments.done 带截断的 JSON、或者干脆没有 arguments.done，只有 response.done 的
+// output 里有 function_call；两种都要照 response.done 里的完整参数调一次、不多调。
+func TestToolFromResponseDoneOutput(t *testing.T) {
+	f := newFake(t, updated)
+	var mu sync.Mutex
+	var got []string
+	call := func(ctx context.Context, name, args string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, name+" "+args)
+		return "ok"
+	}
+	f.dial(t, voice.Config{TextOnly: true, Call: call})
+	f.push(t, `{"type":"response.function_call_arguments.done","response_id":"r1","call_id":"c1","name":"read_claude","arguments":"{\"block\": \"block:01a1"}`,
+		`{"type":"response.done","response":{"id":"r1","status":"completed","output":[`+
+			`{"type":"message","id":"m1"},`+
+			`{"type":"function_call","call_id":"c1","name":"read_claude","arguments":"{\"block\":\"block:01a19b75\"}"},`+
+			`{"type":"function_call","call_id":"c2","name":"close_pane","arguments":"{\"block\":\"block:x\"}"}]}}`)
+	outs := map[string]bool{}
+	for range 2 {
+		ev := f.next(t)
+		item, _ := ev["item"].(map[string]any)
+		if ev["type"] != "conversation.item.create" || item["type"] != "function_call_output" {
+			t.Fatalf("want function_call_output, got %s", js(ev))
+		}
+		outs[item["call_id"].(string)] = true
+	}
+	if ev := f.next(t); ev["type"] != "response.create" {
+		t.Fatalf("want response.create, got %s", js(ev))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	sort.Strings(got)
+	want := []string{`close_pane {"block":"block:x"}`, `read_claude {"block":"block:01a19b75"}`}
+	if !outs["c1"] || !outs["c2"] || !slices.Equal(got, want) {
+		t.Fatalf("calls = %q outs = %v", got, outs)
+	}
 }
 
 // 11-02 实测：工具结果后的 response.create 撞上用户在说话，服务端回 error；会话不能断，等用户说完再发。

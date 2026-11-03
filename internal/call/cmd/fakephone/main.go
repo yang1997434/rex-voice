@@ -18,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,7 +58,11 @@ func main() {
 	wait := flag.Duration("wait", 60*time.Second, "how long to wait for the answer / hang_up")
 	barge := flag.Duration("barge", 0, "-mode wav: send each later turn this long after the answer starts (barge-in) instead of after it ends")
 	ctl := flag.String("ctl", "", "-mode ask: control JSON to send once an ask arrives")
+	invite := flag.String("invite", os.Getenv("REXVOICE_INVITE"), "relay invite code (env REXVOICE_INVITE); appended to the relay URL")
 	flag.Parse()
+	if *invite != "" {
+		*relay += "?invite=" + url.QueryEscape(*invite)
+	}
 	if *mode == "ask" {
 		if err := runAsk(*pairFile, *relay, *deviceID, *ctl, *wait); err != nil {
 			logf("FAIL: %v", err)
@@ -108,7 +113,7 @@ func run(pairFile, relay, mode, wavPath, out, deviceID string, wait, barge time.
 		return fmt.Errorf("unknown -mode %q", mode)
 	}
 
-	wc, err := websocket.NewConfig(relay+"?role=phone&id="+base64.RawURLEncoding.EncodeToString(p.ID[:]), "http://localhost")
+	wc, err := websocket.NewConfig(relay+sep(relay)+"role=phone&id="+base64.RawURLEncoding.EncodeToString(p.ID[:]), "http://localhost")
 	if err != nil {
 		return err
 	}
@@ -201,7 +206,7 @@ func runAsk(pairFile, relay, deviceID, ctl string, wait time.Duration) error {
 	if err := json.Unmarshal([]byte(ctl), &req); err != nil {
 		return fmt.Errorf("-ctl: %w", err)
 	}
-	wc, err := websocket.NewConfig(relay+"?role=phone&id="+base64.RawURLEncoding.EncodeToString(p.ID[:]), "http://localhost")
+	wc, err := websocket.NewConfig(relay+sep(relay)+"role=phone&id="+base64.RawURLEncoding.EncodeToString(p.ID[:]), "http://localhost")
 	if err != nil {
 		return err
 	}
@@ -441,4 +446,12 @@ func readWAV(path string) ([]byte, error) {
 		off += 8 + size + size%2
 	}
 	return nil, errors.New("no data chunk: " + strings.TrimSpace(path))
+}
+
+// sep joins the role query to a relay URL that may already carry ?invite=.
+func sep(relay string) string {
+	if strings.Contains(relay, "?") {
+		return "&"
+	}
+	return "?"
 }

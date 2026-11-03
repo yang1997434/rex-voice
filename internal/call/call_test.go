@@ -318,6 +318,7 @@ func (e *env) ready(t *testing.T) *phone {
 	ph := e.dialPhone(t)
 	ph.handshake(t)
 	ph.hello(t, "phone-1")
+	ph.expectStatus(t, "ended") // no call: told so, in case the phone thinks otherwise
 	return ph
 }
 
@@ -368,7 +369,22 @@ func TestRejectBeforeSalt(t *testing.T) {
 
 	ph2.derive(t, mac) // after the exchange the same phone is accepted
 	ph2.hello(t, "phone-1")
+	ph2.expectStatus(t, "ended")
 	ph2.ctl(t, map[string]any{"t": "call.start"})
+	ph2.expectStatus(t, "listening")
+}
+
+// A phone that reconnects mid-call is told the live state; the ended state after a hello with no call
+// (checked in ready) is what stops a phone that missed hang_up from resending call.start.
+func TestHelloMidCallReportsState(t *testing.T) {
+	e := start(t, true, "")
+	ph := e.ready(t)
+	ph.ctl(t, map[string]any{"t": "call.start"})
+	ph.expectStatus(t, "listening")
+	ph.ws.Close()
+	ph2 := e.dialPhone(t)
+	ph2.handshake(t)
+	ph2.hello(t, "phone-1")
 	ph2.expectStatus(t, "listening")
 }
 

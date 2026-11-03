@@ -65,8 +65,9 @@ func main() {
 func chat(args []string) int {
 	fs := flag.NewFlagSet("chat", flag.ExitOnError)
 	dirFlag := configDirFlag(fs)
-	provider := fs.String("provider", "", "openai | qwen | gemini | grok | moss (default: config.json provider)")
+	provider := fs.String("provider", "", "qwen | grok (default: config.json provider)")
 	model := fs.String("model", "", "provider's model (default: config.json model when the provider matches, else the provider's default)")
+	voiceName := fs.String("voice", "", "provider's voice (default: config.json voice when the provider matches, else the provider's default; qwen3.8 only takes Tina)")
 	keep := fs.Bool("keep-tool-outputs", false, "do not delete tool items after each answer (A/B)")
 	instrFile := fs.String("instructions-file", "", "use this file verbatim as the instructions instead of the built-in prompt")
 	debug := fs.Bool("debug", false, "log every provider event type to stderr")
@@ -82,6 +83,9 @@ func chat(args []string) int {
 	}
 	if *model == "" && *provider == c.Provider {
 		*model = c.Model
+	}
+	if *voiceName == "" && *provider == c.Provider {
+		*voiceName = c.Voice
 	}
 	key, _, err := config.ProviderKey(os.Getenv, config.ProviderKeychain(*provider), *provider)
 	if err != nil {
@@ -114,6 +118,7 @@ func chat(args []string) int {
 	cfg := voice.Config{
 		Provider:     voice.Provider(*provider),
 		Model:        *model,
+		Voice:        *voiceName,
 		Key:          key,
 		Instructions: instr,
 		Tools:        reg.Defs(),
