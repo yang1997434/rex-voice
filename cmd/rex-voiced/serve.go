@@ -20,6 +20,7 @@ import (
 	"github.com/yang1997434/rex-voice/internal/voice"
 	_ "github.com/yang1997434/rex-voice/internal/voice/gemini" // registers provider "gemini"
 	_ "github.com/yang1997434/rex-voice/internal/voice/grok"   // registers provider "grok"
+	_ "github.com/yang1997434/rex-voice/internal/voice/moss"   // registers provider "moss"
 	_ "github.com/yang1997434/rex-voice/internal/voice/openai" // registers provider "openai"
 	_ "github.com/yang1997434/rex-voice/internal/voice/qwen"   // registers provider "qwen"
 )

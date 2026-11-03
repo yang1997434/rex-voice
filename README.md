@@ -88,7 +88,7 @@ Mac 上跑的是后台服务 `rex-voiced`。手机和 Mac 之间经一台中继�
 ```
 
 - `name`：助手怎么称呼你。
-- `provider`：默认的实时语音供应商，`openai`（默认）、`qwen`、`gemini`、`grok`（后两家还在接）。手机在设置里选了别家时，以手机为准。
+- `provider`：默认的实时语音供应商，`openai`（默认）、`qwen`、`gemini`、`grok`、`moss`（MOSS-Live，只能聊天：看不了窗格、发不了指令）。手机在设置里选了别家时，以手机为准。
 - `model` / `voice`：这家供应商的模型和音色，不写用该家默认（OpenAI 是 `gpt-realtime-2.1` / `marin`）；手机选了别家时这两项不用。
 - `project_aliases`：给项目名加一句说明，助手听你说项目时更容易对上号。正在跑的 Claude 目录名和 Rex 会话名它每次通话会自己读，不用写。
 - `forbid_extra`：在内置禁发词之外再禁的词，不分大小写。

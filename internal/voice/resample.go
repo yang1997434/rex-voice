@@ -37,6 +37,52 @@ const (
 	firCutoff = 0.29 // cycles per input sample: about 7 kHz at 24 kHz
 )
 
+// Down48to24 resamples PCM16 mono little-endian from 48 kHz to 24 kHz (2:1): a symmetric
+// windowed-sinc low-pass at about 11 kHz, then every second sample.
+// shortcut: stateless like Down24to16, each call's edges repeat the edge sample; per-chunk calls
+// on MOSS-Live's ~100 ms chunks are fine, carry history across calls if chunk edges click.
+func Down48to24(pcm []byte) ([]byte, error) {
+	if len(pcm) == 0 || len(pcm)%2 != 0 {
+		return nil, errors.New("voice: PCM16 input must be a non-empty even number of bytes")
+	}
+	in := len(pcm) / 2
+	at := func(k int) float64 {
+		k = min(max(k, 0), in-1)
+		return float64(int16(binary.LittleEndian.Uint16(pcm[2*k:])))
+	}
+	n := (in + 1) / 2 // output sample j sits at input sample 2 j
+	out := make([]byte, 2*n)
+	for j := range n {
+		y := halfband[firHalf] * at(2*j)
+		for d := 1; d <= firHalf; d++ {
+			y += halfband[firHalf+d] * (at(2*j-d) + at(2*j+d))
+		}
+		binary.LittleEndian.PutUint16(out[2*j:], uint16(int16(math.Round(min(max(y, -32768), 32767)))))
+	}
+	return out, nil
+}
+
+// halfband[firHalf+d] weighs input samples at distance d from the output position.
+var halfband = func() [2*firHalf + 1]float64 {
+	const cutoff = 0.23 // cycles per input sample: about 11 kHz at 48 kHz
+	var h [2*firHalf + 1]float64
+	var sum float64
+	for i := range h {
+		d := float64(i - firHalf)
+		x := 2 * cutoff * d
+		sinc := 1.0
+		if x != 0 {
+			sinc = math.Sin(math.Pi*x) / (math.Pi * x)
+		}
+		h[i] = sinc * 0.5 * (1 + math.Cos(math.Pi*d/(firHalf+1))) // Hann
+		sum += h[i]
+	}
+	for i := range h {
+		h[i] /= sum // unity gain at DC
+	}
+	return h
+}()
+
 // firPhases[p][i] weighs input sample k0-firHalf+1+i for an output at k0 + p/2.
 var firPhases = func() [2][2 * firHalf]float64 {
 	var ph [2][2 * firHalf]float64
