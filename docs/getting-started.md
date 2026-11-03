@@ -5,7 +5,7 @@
 ## 你需要
 
 - 一台 Mac（macOS 14 以上，Apple 芯片或 Intel 都行），装好 Rex（向分享人要下载地址）并打开过一次，Claude Code 在 Rex 的窗格里跑。
-- 一个语音模型的 API key，四家选一：OpenAI（Realtime）、通义千问（国际站或国内站）、Gemini、Grok。按用量付费，填在手机 app 的设置里，只会发到你自己的 Mac。
+- 一个语音模型的 API key，五家选一：OpenAI（Realtime）、通义千问（国际站或国内站）、Gemini、Grok、MOSS-Live（只能聊天，看不了窗格、发不了指令）。按用量付费，填在手机 app 的设置里，只会发到你自己的 Mac。
 - 一台 iPhone（iOS 26 以上）。
 - 向分享人要两样：TestFlight 邀请（他在 App Store Connect 加你的 Apple ID 邮箱）、中继邀请码。
 
@@ -50,7 +50,7 @@
 
 ## 三、手机上
 
-1. 设置页：选供应商（Grok / 千问 / GPT / Gemini），填那家的 key，选音色，可以填称呼。
+1. 设置页：选供应商（Grok / 千问 / GPT / Gemini / MOSS），填那家的 key，选音色，可以填称呼。
 2. 主屏右侧竖栏那个 logo 是当前供应商，长按转一圈可以换。
 3. 按「开始通话」，直接说话：
    - 「现在有哪些窗格在跑？」「geo 那边做到哪了？」「有没有卡住的？」

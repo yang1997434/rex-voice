@@ -13,6 +13,9 @@ func TestDial(t *testing.T) {
 	if _, err := Dial(context.Background(), Config{Provider: OpenAI, Key: "k"}); err != nil {
 		t.Fatal(err)
 	}
+	if m, v := Defaults(Moss); m != "moss-live-1.0" || v != "default" {
+		t.Errorf("Defaults(moss) = %q %q", m, v)
+	}
 	if got.Model != "gpt-realtime-2.1" || got.Voice != "marin" {
 		t.Fatalf("defaults not filled: %+v", got)
 	}

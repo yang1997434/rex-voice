@@ -23,6 +23,7 @@ const (
 	Qwen   Provider = "qwen"
 	Gemini Provider = "gemini"
 	Grok   Provider = "grok"
+	Moss   Provider = "moss" // MOSS-Live: no tools, no text input
 )
 
 type Config struct {
@@ -79,6 +80,7 @@ var defaults = map[Provider][2]string{
 	Qwen:   {"qwen-audio-3.1-realtime-plus", "longanqian"}, // 用户 2026-11-01 定；3.8 要手选、音色 Tina
 	Gemini: {"gemini-3.8-live", "Kore"},
 	Grok:   {"grok-voice-3.0", "Ara"},
+	Moss:   {"moss-live-1.0", "default"}, // no voices; the provider ignores Voice
 }
 
 // Defaults is the provider's default model and voice; both empty for an unknown provider.

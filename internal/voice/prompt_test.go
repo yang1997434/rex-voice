@@ -34,3 +34,28 @@ func TestBuildEmptyOmitsSentences(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildChat(t *testing.T) {
+	p := BuildChat("小王")
+	for _, want := range []string{"你是 Rex 的语音助手", "「小王」", "一两句", "道别"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("missing %q in %s", want, p)
+		}
+	}
+	for _, no := range []string{"工具", "hang_up", "list_panes"} {
+		if strings.Contains(p, no) {
+			t.Errorf("chat prompt mentions %q: %s", no, p)
+		}
+	}
+	if !strings.Contains(BuildChat(""), "「用户」") {
+		t.Error("empty name not defaulted")
+	}
+}
+
+func TestNameOf(t *testing.T) {
+	for in, want := range map[string]string{Build("小王", nil, nil): "小王", Build("", nil, nil): "用户", "你是电话助手，只用中文。": "", "": ""} {
+		if got := NameOf(in); got != want {
+			t.Errorf("NameOf(%.20q) = %q, want %q", in, got, want)
+		}
+	}
+}

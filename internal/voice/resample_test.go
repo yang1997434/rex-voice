@@ -51,6 +51,30 @@ func TestDown24to16Sine(t *testing.T) {
 	}
 }
 
+func TestDown48to24Sine(t *testing.T) {
+	out, err := Down48to24(sine(1000, 48000, 9600, 10000)) // 200 ms
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2*4800 {
+		t.Fatalf("len = %d, want %d", len(out), 2*4800)
+	}
+	f, peak := measure(out, 24000)
+	if math.Abs(f-1000) > 20 || math.Abs(peak-10000) > 1000 {
+		t.Fatalf("1 kHz came out as %.0f Hz, peak %.0f", f, peak)
+	}
+	// 18 kHz is above the 12 kHz output Nyquist: dropping samples would alias it to 6 kHz at full level.
+	out, _ = Down48to24(sine(18000, 48000, 9600, 10000))
+	if _, peak := measure(out, 24000); peak > 1000 {
+		t.Fatalf("18 kHz not filtered: peak %.0f", peak)
+	}
+	for _, in := range [][]byte{nil, {1, 2, 3}} {
+		if _, err := Down48to24(in); err == nil {
+			t.Errorf("Down48to24(%d bytes) accepted", len(in))
+		}
+	}
+}
+
 func TestDown24to16BadInput(t *testing.T) {
 	for _, in := range [][]byte{nil, {}, {1, 2, 3}} {
 		if _, err := Down24to16(in); err == nil {

@@ -65,7 +65,7 @@ func main() {
 func chat(args []string) int {
 	fs := flag.NewFlagSet("chat", flag.ExitOnError)
 	dirFlag := configDirFlag(fs)
-	provider := fs.String("provider", "", "openai | qwen | gemini | grok (default: config.json provider)")
+	provider := fs.String("provider", "", "openai | qwen | gemini | grok | moss (default: config.json provider)")
 	model := fs.String("model", "", "provider's model (default: config.json model when the provider matches, else the provider's default)")
 	keep := fs.Bool("keep-tool-outputs", false, "do not delete tool items after each answer (A/B)")
 	instrFile := fs.String("instructions-file", "", "use this file verbatim as the instructions instead of the built-in prompt")
