@@ -213,7 +213,7 @@ struct VoiceOption: Identifiable, Hashable {
 }
 
 enum VoiceProvider: String, CaseIterable, Identifiable {
-    case grok, qwen, openai, gemini // display order (settings grid, wheel); only the raw value is stored
+    case grok, qwen, openai, gemini, moss // display order (settings grid, wheel); only the raw value is stored
     var id: String { rawValue }
 
     var title: String {
@@ -222,6 +222,7 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
         case .qwen: "千问"
         case .gemini: "Gemini"
         case .grok: "Grok"
+        case .moss: "MOSS"
         }
     }
 
@@ -232,6 +233,7 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
         case .qwen: "千问"
         case .gemini: "Gemini"
         case .grok: "Grok"
+        case .moss: "MOSS"
         }
     }
 
@@ -241,6 +243,8 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
         case .qwen: [Color(red: 0.43, green: 0.36, blue: 0.98), Color(red: 0.31, green: 0.24, blue: 0.85)]
         case .gemini: [Color(red: 0.26, green: 0.52, blue: 0.96), Color(red: 0.61, green: 0.4, blue: 0.95)]
         case .grok: [Color(white: 0.22), Color(white: 0.05)]
+        // platform.moss.cn's own primary is a neutral #0f0f0f, which would read as Grok; deep blue to indigo instead.
+        case .moss: [Color(red: 0.12, green: 0.23, blue: 0.62), Color(red: 0.36, green: 0.22, blue: 0.75)]
         }
         return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
@@ -253,6 +257,7 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
                      "qwen3.5-omni-plus-realtime"]
         case .gemini: ["gemini-3.8-live", "gemini-3.8-live-extended-thinking"]
         case .grok: ["grok-voice-3.0"]
+        case .moss: ["moss-live-1.0"]
         }
     }
 
@@ -284,6 +289,8 @@ enum VoiceProvider: String, CaseIterable, Identifiable {
                          "ursa", "zagan", "zenith"]
             return female.map { v($0, $0.capitalized, "女声") } + male.map { v($0, $0.capitalized, "男声") }
                 + other.map { v($0, $0.capitalized) }
+        case .moss:
+            return [v("default")] // MOSS-Live has no voice choice; the Mac ignores it. Never empty: `voice(for:)` takes [0].
         }
     }
 }

@@ -1,10 +1,10 @@
 import SwiftUI
 
 /// The rail shows only the current provider's logo with its short name under it. Holding it 0.35 s opens a dial
-/// around it (second version, 2026-11-02): a frosted arc band of radius ~110pt on its upper left with the other three
-/// logos on the band's center line, 40° apart at 120° / 160° / 200°. Without lifting the finger, turning it around the
-/// logo turns the band with it (band angle = finger angle - angle where the finger left the center, spring-smoothed,
-/// held between the angles that keep all three on screen, with a rubber band past them). The logo under the finger
+/// around it (second version, 2026-11-02): a frosted arc band of radius ~110pt on its upper left with the other four
+/// logos on the band's center line, 40° apart at 105° / 145° / 185° / 225°. Without lifting the finger, turning it around
+/// the logo turns the band with it (band angle = finger angle - angle where the finger left the center, spring-smoothed,
+/// held between the angles that keep all four on screen, with a rubber band past them). The logo under the finger
 /// (angle within 20°, finger over 40pt from the center) grows 1.5x; letting go there picks it: it flies to the center,
 /// the old one flies to its slot and the dial closes. Letting go anywhere else closes it unchanged. A short tap shakes
 /// and shows「长按换供应商」(and closes an open dial); during a call a hold only shakes.
@@ -27,7 +27,7 @@ struct ProviderWheel: View {
     /// Bumped on every pick: the name under the logo stands out for 1.6 s.
     @State private var picks = 0
     @State private var justPicked = false
-    /// The three providers in the dial's slots (a pick swaps the old current one into the picked one's slot).
+    /// The four providers in the dial's slots (a pick swaps the old current one into the picked one's slot).
     @State private var order: [VoiceProvider] = []
     /// Band rotation in degrees (math direction, counterclockwise on screen): unclamped as the finger turned it, and
     /// as drawn (clamped with the rubber band).
@@ -40,7 +40,7 @@ struct ProviderWheel: View {
 
     private static let logo: CGFloat = 44
     private static let band: CGFloat = 64
-    private static let slots: [Double] = [120, 160, 200]
+    private static let slots: [Double] = [105, 145, 185, 225]
     /// Release / highlight tolerance: the finger's angle to a logo's.
     private static let pickTolerance: Double = 20
     /// Within this distance of the center the finger picks nothing and does not turn the band.
@@ -73,17 +73,26 @@ struct ProviderWheel: View {
         .animation(.smooth(duration: 0.25), value: locked)
         .onChange(of: open, initial: true) { _, now in
             guard now else { return }
-            order = VoiceProvider.allCases.filter { $0 != settings.provider }
+            order = Array(VoiceProvider.allCases.filter { $0 != settings.provider }.prefix(Self.slots.count))
             rawTurn = 0
             turn = 0
             lastAngle = nil
         }
         #if DEBUG
         // `REXVOICE_WHEEL_ANGLE=<deg>` (with `REXVOICE_WHEEL=open`): as if the finger grabbed the top logo and turned
-        // to that angle (screenshots).
+        // to that angle (screenshots). `REXVOICE_WHEEL_PICK=<deg>` instead: the finger slides straight out from the
+        // center to that angle and lets go 1 s later.
         .task(id: center) {
-            guard open, center != .zero,
-                  let a = ProcessInfo.processInfo.environment["REXVOICE_WHEEL_ANGLE"].flatMap(Double.init) else { return }
+            let env = ProcessInfo.processInfo.environment
+            guard open, center != .zero else { return }
+            if let a = env["REXVOICE_WHEEL_PICK"].flatMap(Double.init) {
+                lastAngle = nil
+                track(angle: a, g: dialGeometry())
+                try? await Task.sleep(for: .seconds(1))
+                if !Task.isCancelled, let p = hover { pick(p) }
+                return
+            }
+            guard let a = env["REXVOICE_WHEEL_ANGLE"].flatMap(Double.init) else { return }
             rawTurn = 0 // the center can settle in more than one pass
             lastAngle = Self.slots[0]
             track(angle: a, g: dialGeometry())
@@ -143,8 +152,8 @@ struct ProviderWheel: View {
             .onChange(of: locked) { _, now in if now { close() } }
     }
 
-    /// Band and all four logos in one view turned by `turn` (the logos turn back so they stay upright). The current
-    /// one sits at the center; the other three only exist while open, so VoiceOver never lands on a hidden one.
+    /// Band and all five logos in one view turned by `turn` (the logos turn back so they stay upright). The current
+    /// one sits at the center; the other four only exist while open, so VoiceOver never lands on a hidden one.
     private func dial(accent: Color, g: DialGeometry) -> some View {
         let side = 2 * (g.radius + Self.band)
         let move: Animation? = reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.72)
@@ -186,7 +195,7 @@ struct ProviderWheel: View {
         .animation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.7), value: hover)
     }
 
-    /// The frosted arc band under the three slots, round-ended, with a crisp line along its outer edge.
+    /// The frosted arc band under the four slots, round-ended, with a crisp line along its outer edge.
     private func bandView(radius: CGFloat) -> some View {
         let dark = scheme == .dark
         let (from, to) = (Self.slots.first!, Self.slots.last!)
@@ -285,7 +294,7 @@ struct ProviderWheel: View {
 
     struct DialGeometry {
         var radius: CGFloat
-        /// Turn range (degrees) that keeps the three slots on screen and clear of the rail.
+        /// Turn range (degrees) that keeps the four slots on screen and clear of the rail.
         var lo: Double
         var hi: Double
     }
