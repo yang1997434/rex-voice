@@ -90,3 +90,5 @@
 
 - 模思智能 11-02 发布的全双工实时语音，闭源、只有云 API（`wss://api.mosi.cn/v1/realtime?model=moss-live-1.0`），限时免费。协议和 `voice.Session` 接口能对上（16k 上行 / 48k 下行 PCM、`mic_state`、`response.interrupted`、播放回执），但 API 没有开发者 tools、没有文字输入事件，所以接进来只能「听和聊」，不能操作 Rex。
 - 用户 11-02 定：先自己在 playground 玩，不接。接入条件：它开放 tools（或文字输入）。到时按「第 5 家 provider + 手机轮盘第 5 家」做，开场把窗格快照塞 `instructions`（≤8000 字）。文档：https://platform.moss.cn/docs/reference/moss-live
+- [已做] 0.3.5（build 202611030931，commit 4ecff6f）：设置页「Claude 等我时推送提醒」开关（ctl `prefs{push}`，Mac 只放内存、手机每次连上重发）；Mac 上作答打字时不再每 5 秒重推（ParseBox 把输入框那行整行丢掉，根因见 docs/protocol.md）。本机 rex-voiced 已重装 0.3.5-dev。
+- [ ] 真机验 E2E 30、31（推送开关、作答不重复推）。
