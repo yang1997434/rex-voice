@@ -75,7 +75,7 @@
 - [ ] 真机验收 CLAUDE.md 清单 25–26（轮盘、J 版换挡）；没核实：滑选时勾跟着走、VoiceOver 是否把家名读两遍、触感。
 - [已做 0.3.3] 推送里直接回答 Claude 的提问——Mac 把 blocked 窗格的编号选项塞进推送，手机通知按钮「选 1/2/3」「取消」「输入回复」+ app 内一张提问卡（真实选项按钮 + 输入框），不用打电话；协议加手机 → Mac 的 `answer` ctl（block + keys 或 text），Mac 复用 send_keys / send_to_pane 闸门。纯文字提问只能走输入回复。
 - [已做] 0.3.3（build 202611021320，commit 4fe5f40）：轮盘第二版（圆弧拨盘、跟手转、松手即选）；竖栏按右安全区居中再左移 6pt（外屏实测）、内屏 J 版；推送里直接回答（ask / ask_done / answer，通知动作 + AskCard）；中继邀请码（RELAY_INVITES）。Mac 服务已重装、config.json 已带邀请码、新二维码在 Rex 标签页「配对二维码 0.3.3」。
-- [ ] 中继部署（要用户明文「部署 rex-voice 中继」）：换二进制 + relay.env 加 `RELAY_INVITES=<Mac config.json 里的 invite>`；部署后旧配对 403，用户要用新二维码重扫。
+- [已做 2026-11-02] 中继部署（用户明文授权）：新二进制 + relay.env `RELAY_INVITES`，journal `invites required (1 codes)`；手机已重扫。
 - [ ] 内屏没在模拟器核过（Duo 模拟器展不开）：竖栏对齐和 J 版布局等真机；差得远就按真机量的偏移改 `ContentView.swift` 里那个 -6pt。
 - [ ] `TestDropWithoutPeer` 约 5% 偶发失败（改动前就有，lost 帧和手机上线抢时序），下一批修。
 - [ ] AskUserQuestion 一次多道题：窗格一直 blocked，Mac 只发第一题的 ask；下一批看 capture 能不能分出第几题。
@@ -84,6 +84,7 @@
 - [已做] 0.3.4（build 202611021415，commit a09034a）：锁屏点通知崩溃（通知代理回调改主线程隔离，记忆 ios-notification-delegate-nonisolated-crash）；多题每题都推、题干与选项同一次截屏、Submit 页题目「提交答案？」；邀请码打码；设置页「千问」。Mac 安装包 v0.3.4 挂在 GitHub Releases；朋友上手流程 docs/getting-started.md。
 - [ ] 真机验：0.3.4 锁屏点通知不崩；连问两题每题一张卡、题目选项对得上；内屏竖栏对齐。
 - [ ] Rex 下载地址：getting-started.md 里写「向分享人要」，确定官方地址后补上。
+- [已做 2026-11-02] TestFlight 外部测试组「朋友」公开链接 https://testflight.apple.com/join/jJmrkutd ，0.3.4 beta 审核 22:42 APPROVED（提交后约 8 小时）；内部组「rex」照旧。后续版本加进「朋友」组会再审一次（通常只有首次慢）。
 
 ## MOSS-Live（2026-11-02 调研，用户定先不接）
 
