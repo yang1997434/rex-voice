@@ -314,6 +314,13 @@ final class CallController {
         }
     }
 
+    /// The Mac forgets `prefs` on restart, so this goes after every hello and on every toggle; offline it waits for the next `.ready`.
+    func sendPrefs() {
+        guard let relay else { return }
+        let msg = ControlMessage.prefs(push: settings.pushEnabled)
+        Task { _ = await relay.send(msg) }
+    }
+
     private func handle(_ event: RelayClient.Event) {
         switch event {
         case .connecting:
@@ -324,6 +331,7 @@ final class CallController {
         case .ready:
             link = .ready
             asks = [] // the Mac resends every still-open ask right after this hello
+            sendPrefs()
             // The Mac keeps a call across a phone reconnect; call.start is idempotent there.
             if inCall, let relay, let startMessage { Task { await relay.send(startMessage) } }
         case .inviteRejected:
@@ -436,7 +444,7 @@ final class CallController {
             asks.removeAll { $0.block == block }
         case let .answerResult(block, ok, msg):
             answerResults[block] = (ok, msg)
-        case .hello, .callStart, .callEnd, .voicePreview, .answer, .unknown:
+        case .hello, .callStart, .callEnd, .voicePreview, .answer, .prefs, .unknown:
             break
         }
     }

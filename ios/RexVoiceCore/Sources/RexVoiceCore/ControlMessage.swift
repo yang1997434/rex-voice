@@ -13,6 +13,8 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case voicePreview(provider: String?, model: String?, voice: String?, apiKey: String?, name: String? = nil)
     /// Answers a blocked Claude pane without a call: `keys` (send_keys whitelist, e.g. ["2"]) or `text` (send_to_pane).
     case answer(block: String, keys: [String]?, text: String?)
+    /// `push:false` stops the Mac's lock-screen notify (ask cards still come). Mac keeps it in memory only: resent after every hello.
+    case prefs(push: Bool)
     // Mac -> phone
     /// `detail` is optional: the Mac side currently sends status without it.
     case status(state: String, detail: String?)
@@ -38,7 +40,7 @@ public enum ControlMessage: Codable, Equatable, Sendable {
         case t, app, device, deviceID = "device_id", state, detail, who, text, reason, msg
         case provider, model, voice, apiKey = "api_key"
         case id, name, mime, size, chunks, url, title
-        case block, session, project, options, keys, ok
+        case block, session, project, options, keys, ok, push
     }
 
     public init(from decoder: any Decoder) throws {
@@ -81,6 +83,7 @@ public enum ControlMessage: Codable, Equatable, Sendable {
         case "answer":
             self = .answer(block: try c.decode(String.self, forKey: .block), keys: try c.decodeIfPresent([String].self, forKey: .keys),
                            text: try c.decodeIfPresent(String.self, forKey: .text))
+        case "prefs": self = .prefs(push: try c.decode(Bool.self, forKey: .push))
         case "ask":
             self = .ask(block: try c.decode(String.self, forKey: .block),
                         session: try c.decodeIfPresent(String.self, forKey: .session) ?? "",
@@ -153,6 +156,9 @@ public enum ControlMessage: Codable, Equatable, Sendable {
             try c.encode(block, forKey: .block)
             try c.encodeIfPresent(keys, forKey: .keys)
             try c.encodeIfPresent(text, forKey: .text)
+        case let .prefs(push):
+            try c.encode("prefs", forKey: .t)
+            try c.encode(push, forKey: .push)
         case let .ask(block, session, project, msg, options):
             try c.encode("ask", forKey: .t)
             try c.encode(block, forKey: .block)

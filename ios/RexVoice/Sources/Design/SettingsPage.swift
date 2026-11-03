@@ -197,6 +197,13 @@ struct SettingsPage: View {
                 Text("助手怎么叫你，下次通话和试听生效；空着就用 Mac 配置里的名字。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                Toggle("Claude 等我时推送提醒", isOn: $settings.pushEnabled)
+                    .toggleStyle(.switch)
+                    .font(.subheadline.weight(.medium))
+                    .padding(.top, 8)
+                Text("关掉后只在 app 里显示提问卡、通话里照样提醒；在电脑前可以先关掉。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
     }

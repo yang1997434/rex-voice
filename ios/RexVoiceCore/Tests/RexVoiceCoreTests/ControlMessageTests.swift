@@ -43,6 +43,12 @@ import Testing
         #expect(try JSONDecoder().decode(ControlMessage.self, from: encoded) == msg)
     }
 
+    @Test func prefsRoundTrip() throws {
+        let encoded = try JSONEncoder().encode(ControlMessage.prefs(push: false))
+        #expect(try Self.object(encoded) == Self.object(Data(#"{"t":"prefs","push":false}"#.utf8)))
+        #expect(try JSONDecoder().decode(ControlMessage.self, from: encoded) == .prefs(push: false))
+    }
+
     @Test func callStartOmitsNilFields() throws {
         let msg = ControlMessage.callStart(provider: "qwen", model: "qwen3.8-omni-flash-realtime", voice: nil, apiKey: "sk-1234")
         #expect(try Self.object(JSONEncoder().encode(msg))

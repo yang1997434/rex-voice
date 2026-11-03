@@ -25,6 +25,13 @@ final class AppSettings {
     var name: String {
         didSet { defaults.set(name, forKey: "name") }
     }
+    /// Lock-screen push when a Claude blocks; off while at the computer. Sent to the Mac as `prefs`.
+    var pushEnabled: Bool {
+        didSet {
+            defaults.set(pushEnabled, forKey: "push.enabled")
+            CallController.shared?.sendPrefs()
+        }
+    }
     /// Last four characters of each saved key, for「已保存 ••••1234」; the key itself is read only when a call starts.
     private(set) var keyTails: [VoiceProvider: String] = [:]
     /// Bumped on model / voice writes so views reading them refresh (they are stored in UserDefaults, not here).
@@ -37,6 +44,7 @@ final class AppSettings {
         provider = defaults.string(forKey: "provider").flatMap(VoiceProvider.init(rawValue:)) ?? .openai
         personaID = defaults.string(forKey: Self.personaKey) ?? ""
         name = defaults.string(forKey: "name") ?? ""
+        pushEnabled = defaults.object(forKey: "push.enabled") as? Bool ?? true
         for p in VoiceProvider.allCases {
             if let key = try? Self.storedKey(p) { keyTails[p] = String(key.suffix(4)) }
         }
