@@ -5,12 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -477,50 +475,35 @@ func TestUsageLine(t *testing.T) {
 	}
 }
 
-// A Beijing key must not be sent to the international endpoint and vice versa: the first endpoint
-// that completes the handshake wins, the one that refuses is skipped.
-func TestDialFallsBackToSecondEndpoint(t *testing.T) {
-	f := newFake(t, `{"type":"session.updated"}`)
+// Without Extra region the international endpoint is the only one dialed (Beijing never, even when
+// it is reachable); region "cn" picks Beijing alone.
+func TestDialDefaultsToInternationalOnly(t *testing.T) {
+	bj := newFake(t, `{"type":"session.updated"}`)
+	intl := newFake(t, `{"type":"session.updated"}`)
 	saved := endpoints
-	endpoints = []string{"ws://127.0.0.1:1/api-ws/v1/realtime", "ws" + strings.TrimPrefix(f.srv.URL, "http")}
+	endpoints = []string{"ws" + strings.TrimPrefix(bj.srv.URL, "http"), "ws" + strings.TrimPrefix(intl.srv.URL, "http")}
 	t.Cleanup(func() { endpoints = saved })
-	cfg := f.cfg(voice.Config{})
+	cfg := intl.cfg(voice.Config{})
 	delete(cfg.Extra, "url")
 	s, err := dial(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
+	if bj.header != nil || intl.header == nil {
+		t.Fatalf("default dial: beijing reached=%v international reached=%v", bj.header != nil, intl.header != nil)
+	}
+	cfg.Extra["region"] = "cn"
+	if s, err = dial(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if bj.header == nil {
+		t.Fatal("region cn did not reach beijing")
+	}
 	endpoints = []string{"ws://127.0.0.1:1/api-ws/v1/realtime", "ws://127.0.0.1:2/api-ws/v1/realtime"}
+	delete(cfg.Extra, "region")
 	if _, err := dial(context.Background(), cfg); err == nil {
 		t.Fatal("dial succeeded with no reachable endpoint")
-	}
-}
-
-// The second call with the same key goes straight to the endpoint that accepted it the first time.
-func TestDialRemembersEndpoint(t *testing.T) {
-	var refused atomic.Int32
-	dead := httptest.NewServer(websocket.Server{Handshake: func(*websocket.Config, *http.Request) error {
-		refused.Add(1)
-		return errors.New("wrong region")
-	}})
-	t.Cleanup(dead.Close)
-	f := newFake(t, `{"type":"session.updated"}`)
-	saved := endpoints
-	endpoints = []string{"ws" + strings.TrimPrefix(dead.URL, "http"), "ws" + strings.TrimPrefix(f.srv.URL, "http")}
-	t.Cleanup(func() { endpoints = saved })
-	cfg := f.cfg(voice.Config{})
-	cfg.Key = "remember-me"
-	delete(cfg.Extra, "url")
-	for i, want := range []int32{1, 1} {
-		s, err := dial(context.Background(), cfg)
-		if err != nil {
-			t.Fatalf("dial %d: %v", i, err)
-		}
-		<-f.conn // free the fake for the next connection
-		s.Close()
-		if got := refused.Load(); got != want {
-			t.Fatalf("dial %d: dead endpoint tried %d times, want %d", i, got, want)
-		}
 	}
 }

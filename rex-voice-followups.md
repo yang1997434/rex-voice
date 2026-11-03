@@ -90,9 +90,9 @@
 
 - 模思智能 11-02 发布的全双工实时语音，闭源、只有云 API（`wss://api.mosi.cn/v1/realtime?model=moss-live-1.0`），限时免费。协议和 `voice.Session` 接口能对上（16k 上行 / 48k 下行 PCM、`mic_state`、`response.interrupted`、播放回执），但 API 没有开发者 tools、没有文字输入事件，所以接进来只能「听和聊」，不能操作 Rex。
 - 用户 11-02 定先不接；11-03 推翻、定直接上（只聊）。文档：https://platform.moss.cn/docs/reference/moss-live
-- [已做] 0.3.6（Mac bcffa81 / iOS 0d89fa9）：`internal/voice/moss` 第五家（协议 4.5：事件名字段 `action`、chunk 分片帧、回执流控、关键词挂断、开场快照进 instructions）；iOS 枚举 / 轮盘四槽 / `logo-moss`（照官方位图描的线稿）/ MOSS 不显示音色卡和试听；Qwen 记住上次接受 key 的端点（1462246）。真 key manual 测试三连过，说完 → 开口 0.75 秒。
+- [已做] 0.3.6（Mac bcffa81 / iOS 0d89fa9）：`internal/voice/moss` 第五家（协议 4.5：事件名字段 `action`、chunk 分片帧、回执流控、关键词挂断、开场快照进 instructions）；iOS 枚举 / 轮盘四槽 / `logo-moss`（照官方位图描的线稿）/ MOSS 不显示音色卡和试听；Qwen 默认只连国际站（用户 11-03 定；之前「记住端点」的做法撤了，北京 key 用 `Extra.region = cn`）。真 key manual 测试三连过，说完 → 开口 0.75 秒。
 - [ ] 真机验 E2E 32；轮盘弧变 120° 后展开时会盖住「开始通话」右上角（通话中不展开，不影响操作），用户看截图定要不要收弧。
 - [ ] MOSS 开了 tools 或文字输入再接工具、试听、口头提醒；manual 第二次跑有一轮在第 31 个 chunk 后服务端停发（没复现），再遇到就把收发日志（`moss: send` / `moss: audio`）整段存下来发给模思。
-- [ ] 第一句延迟（用户 11-03 反馈 Qwen 明显慢、其他家偶尔慢）：OpenAI 一通实测拨号 1.3 秒、说完到开口 0.4 秒、Mac 转发不缓冲、手机收到即播，Mac 和模型这段不慢；嫌疑是手机 ⇄ 中继 ⇄ Mac 网络和 OpenAI semantic_vad 的等待，要用户再打 Qwen / OpenAI 各一通（debug 版在跑）对时间线。
+- [已做] 第一句延迟（用户 11-03 反馈）：Qwen 的根因是先连北京、等拒绝（实测 4.5 秒）才连新加坡，改成默认只连国际站；连上后说完到开口 0.2 秒。OpenAI 拨号 1.3 秒、说完到开口 0.4 秒，Mac 转发不缓冲、手机收到即播；「偶尔慢」还没抓到样本，再遇到记下时间我查 debug 日志。
 - [已做] 0.3.5（build 202611030931，commit 4ecff6f）：设置页「Claude 等我时推送提醒」开关（ctl `prefs{push}`，Mac 只放内存、手机每次连上重发）；Mac 上作答打字时不再每 5 秒重推（ParseBox 把输入框那行整行丢掉，根因见 docs/protocol.md）。本机 rex-voiced 已重装 0.3.5-dev。
 - [ ] 真机验 E2E 30、31（推送开关、作答不重复推）。

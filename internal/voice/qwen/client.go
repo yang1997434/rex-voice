@@ -2,7 +2,6 @@ package qwen
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -28,7 +27,7 @@ const (
 	maxTurns     = 50
 )
 
-// endpoints is the default dial order (Beijing, then international); tests point it at fakes.
+// endpoints are the two regions (Beijing, international); the default dials only endpoints[1:]. Tests point them at fakes.
 var endpoints = []string{defaultURL, intlURL}
 
 // Variables so tests can shorten them.
@@ -89,8 +88,9 @@ func dial(ctx context.Context, cfg voice.Config) (*Session, error) {
 	if cfg.Voice == "Tina" && strings.Contains(cfg.Model, "audio-3.1") {
 		cfg.Voice = "longanqian" // audio-3.1 has its own voice list (longan*, *_v3.1); 3.8's Tina is rejected (11-01)
 	}
-	// A key belongs to one region and the other region answers 401; without Extra url / workspace /
-	// region the Beijing endpoint is tried first and the international one on failure.
+	// A key belongs to one region and the other region answers 401. Default is the international
+	// endpoint only: dialing Beijing first cost every call its refusal (1–4.5 s, 11-03 实测，用户定
+	// 只留新加坡); a Beijing key sets Extra region "cn".
 	var urls []string
 	hint := ""
 	switch ws, region := cfg.Extra["workspace"], cfg.Extra["region"]; {
@@ -106,7 +106,7 @@ func dial(ctx context.Context, cfg voice.Config) (*Session, error) {
 	case region == "cn":
 		urls = []string{endpoints[0]}
 	default:
-		urls, hint = preferLast(cfg.Key, endpoints), "（两个地域都连不上：key 不对，或在 Extra workspace 填百炼业务空间 ID 改走新端点）"
+		urls, hint = endpoints[1:], "（国际站连不上：key 不对；北京的 key 在 Extra region 填 cn，百炼业务空间在 Extra workspace 填 ID）"
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -124,7 +124,6 @@ func dial(ctx context.Context, cfg voice.Config) (*Session, error) {
 		wc.Header.Set("User-Agent", "rex-voiced/"+cfg.Version)
 		if ws, err = wc.DialContext(ctx); err == nil {
 			log.Info("qwen: connected", "endpoint", u)
-			remember(cfg.Key, u)
 			break
 		}
 		log.Info("qwen: dial failed, trying next endpoint", "endpoint", u, "err", err)
@@ -193,39 +192,6 @@ func (s *Session) sessionConfig() map[string]any {
 		c["input_audio_transcription"] = nil // the server turns a default transcriber on otherwise
 	}
 	return c
-}
-
-// lastGood is the endpoint that accepted a key (by its hash), so the next call does not pay the
-// other region's refusal again (11-03: an international key lost ~1.2 s on Beijing every call).
-var (
-	lastMu   sync.Mutex
-	lastGood = map[[sha256.Size]byte]string{}
-)
-
-func remember(key, u string) {
-	lastMu.Lock()
-	lastGood[sha256.Sum256([]byte(key))] = u
-	lastMu.Unlock()
-}
-
-// preferLast moves the endpoint remembered for key to the front of urls; unknown or absent: urls as is.
-func preferLast(key string, urls []string) []string {
-	lastMu.Lock()
-	u, ok := lastGood[sha256.Sum256([]byte(key))]
-	lastMu.Unlock()
-	if !ok || len(urls) == 0 || urls[0] == u {
-		return urls
-	}
-	out := []string{u}
-	for _, x := range urls {
-		if x != u {
-			out = append(out, x)
-		}
-	}
-	if len(out) == len(urls)+1 { // not one of ours (tests swap endpoints): ignore it
-		return urls
-	}
-	return out
 }
 
 // turnDetection picks the VAD the model accepts: qwen-audio-3.1 rejects semantic_vad and offers
