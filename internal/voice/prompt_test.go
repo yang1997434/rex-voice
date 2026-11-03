@@ -37,12 +37,12 @@ func TestBuildEmptyOmitsSentences(t *testing.T) {
 
 func TestBuildChat(t *testing.T) {
 	p := BuildChat("小王")
-	for _, want := range []string{"你是 Rex 的语音助手", "「小王」", "一两句", "道别"} {
+	for _, want := range []string{"你是 Rex 的语音助手", "「小王」", "一两句", "道别", "没有任何工具", "做不了", "不要编", "24 小时制"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("missing %q in %s", want, p)
 		}
 	}
-	for _, no := range []string{"工具", "hang_up", "list_panes"} {
+	for _, no := range []string{"hang_up", "list_panes", "read_claude"} {
 		if strings.Contains(p, no) {
 			t.Errorf("chat prompt mentions %q: %s", no, p)
 		}

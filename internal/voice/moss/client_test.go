@@ -200,6 +200,19 @@ func TestSnapshot(t *testing.T) {
 	if got := snapshot(context.Background(), failing); got != snapshotPrefix+"拿不到快照" {
 		t.Errorf("error from Call: %q", got)
 	}
+	stamped := func(_ context.Context, name, _ string) string {
+		if name == "list_claude" {
+			return `[{"started":"2026-11-02T17:19:04-08:00","last_active":"2026-11-03T05:25:14-08:00"}]`
+		}
+		return `[]`
+	}
+	now := time.Date(2026, 11, 3, 5, 40, 0, 0, time.FixedZone("PST", -8*3600))
+	saved := snapshotNow
+	snapshotNow = func() time.Time { return now }
+	t.Cleanup(func() { snapshotNow = saved })
+	if got := snapshot(context.Background(), stamped); !strings.Contains(got, `"started":"11-02 17:19"`) || !strings.Contains(got, `"last_active":"今天 05:25"`) {
+		t.Errorf("timestamps not rewritten: %s", got)
+	}
 	long := func(context.Context, string, string) string { return strings.Repeat("窗", 5000) }
 	if got := snapshot(context.Background(), long); len([]rune(got)) != maxSnapshot {
 		t.Errorf("snapshot is %d runes, want %d", len([]rune(got)), maxSnapshot)

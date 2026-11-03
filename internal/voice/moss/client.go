@@ -16,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -41,8 +42,28 @@ const (
 	maxTurns       = 50
 	maxSnapshot    = 6000 // runes of the opening snapshot in instructions
 	hangUpReason   = `{"reason":"用户说挂断"}`
-	snapshotPrefix = "现在 Mac 上 Rex 各窗格和 Claude 的状态（通话开始时的快照，之后不会更新）："
+	snapshotPrefix = "现在 Mac 上 Rex 各窗格和 Claude 的状态（通话开始时的快照，之后不会更新；时间是 24 小时制）："
 )
+
+// isoTime is an RFC 3339 timestamp in tool output ("2026-11-03T05:25:14-08:00"): read aloud by the model
+// as 下午五点 (11-03 实测), so the snapshot rewrites it to "今天 05:25" / "11-02 17:25".
+var isoTime = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})`)
+
+var snapshotNow = time.Now // tests pin it
+
+func plainTimes(text string, now time.Time) string {
+	return isoTime.ReplaceAllStringFunc(text, func(m string) string {
+		t, err := time.Parse(time.RFC3339Nano, m)
+		if err != nil {
+			return m
+		}
+		t = t.In(now.Location())
+		if t.YearDay() == now.YearDay() && t.Year() == now.Year() {
+			return t.Format("今天 15:04")
+		}
+		return t.Format("01-02 15:04")
+	})
+}
 
 var silence = make([]byte, 640) // 20 ms at 16 kHz
 
@@ -156,7 +177,7 @@ func snapshot(ctx context.Context, call func(context.Context, string, string) st
 		if strings.HasPrefix(out, `{"error"`) {
 			return snapshotPrefix + "拿不到快照"
 		}
-		parts = append(parts, tool+"："+out)
+		parts = append(parts, tool+"："+plainTimes(out, snapshotNow()))
 	}
 	t := snapshotPrefix + strings.Join(parts, "\n")
 	if utf8.RuneCountInString(t) > maxSnapshot {
