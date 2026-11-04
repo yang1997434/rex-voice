@@ -59,6 +59,7 @@ type Session struct {
 	mu     sync.Mutex
 	closed bool
 	turns  []voice.Turn
+	usd    float64 // summed turn estimates, for Cost
 
 	tmu      sync.Mutex
 	running  map[string]context.CancelFunc // function call id -> cancel, for toolCallCancellation
@@ -198,6 +199,19 @@ func (s *Session) setupMsg(handle string) map[string]any {
 
 // Age is the time since Dial.
 func (s *Session) Age() time.Duration { return time.Since(s.start) }
+
+// Cost is the summed estimate of this session's responses so far.
+func (s *Session) Cost() float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usd
+}
+
+func (s *Session) addCost(usd float64) {
+	s.mu.Lock()
+	s.usd += usd
+	s.mu.Unlock()
+}
 
 // MaxAge is 0: goAway is handled inside by session resumption.
 func (s *Session) MaxAge() time.Duration { return 0 }
@@ -586,6 +600,7 @@ func (s *Session) onTurnComplete() {
 	s.answering, s.cut = false, false
 	u := s.usage.toUsage(s.cfg.Model)
 	s.usage = rawUsage{}
+	s.addCost(u.USD)
 	s.writeUsage(u)
 	if h.ResponseDone != nil {
 		h.ResponseDone(u.public())

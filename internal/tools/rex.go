@@ -27,6 +27,9 @@ type Options struct {
 	// Alive reports whether a pid is still running; default sends signal 0. A pane whose Claude has exited
 	// may keep its claude-code status in Rex, and must then be treated as a shell again.
 	Alive func(pid int) bool
+	// Summarize, if set, turns read_claude's last reply into two spoken sentences (NewSummarizer);
+	// on error the reply falls back to the cut text. nil = no summary.
+	Summarize func(ctx context.Context, text string) (string, error)
 }
 
 func pidAlive(pid int) bool {
@@ -51,6 +54,9 @@ func runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
 type env struct {
 	Options
 	auditMu sync.Mutex
+
+	sumMu    sync.Mutex
+	sumCache map[string]string // path + mtime -> Summarize result
 }
 
 // NewRexTools returns list_panes, read_pane, list_claude, read_claude, send_to_pane
@@ -79,38 +85,38 @@ func NewRexTools(opts Options) []Tool {
 	return append([]Tool{
 		{
 			Name:        "list_panes",
-			Description: "列出 Mac 上所有 Rex 终端窗格，以及每个窗格里程序报的状态（working / blocked / idle / done）、它正在做什么（Claude 窗格是它报的一句话，其它窗格只说在跑命令 / 空闲 / 等输入）、属于哪个项目。",
+			Description: "列出所有 Rex 窗格及状态、在做什么。",
 			Parameters:  noParams,
 			Run:         e.listPanes,
 		},
 		{
 			Name:        "read_pane",
-			Description: "读取一个窗格屏幕上最后几十行文字。只有问「屏幕上现在显示什么」才用；问 Claude 说了什么用 read_claude。block 用 list_panes 返回的 block 字段。",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"lines":{"type":"integer","description":"要最后多少行，默认 40"}},"required":["block"],"additionalProperties":false}`),
+			Description: "屏幕现在显示什么用 read_pane，Claude 的结论用 read_claude。",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"lines":{"type":"integer"}}}`),
 			Run:         e.readPane,
 		},
 		{
 			Name:        "list_claude",
-			Description: "列出这台 Mac 上所有正在跑的 Claude Code 进程（不管开在 Rex 还是别的终端里）：项目目录、会话名、忙还是闲、什么时候开的、会话标题、最近一次活动时间。问「有几个 Claude / 哪些项目在开发」先用这个。",
+			Description: "列出在跑的所有 Claude。",
 			Parameters:  noParams,
 			Run:         e.listClaude,
 		},
 		{
 			Name:        "read_claude",
-			Description: "读某个 Claude 的会话记录（不受屏幕滚动影响）：asked 是最近一条用户指令，reply 是 Claude 最后一条回复去掉代码、路径、链接后的结论，status 是它现在 busy / idle / blocked。问「Claude 说了什么 / 结论 / 做到哪了 / 卡住没有」优先用这个；默认只给结论，用户要原文再带 verbose:true（多给 detail：最近两段原话）。传 pid（来自 list_claude）或 block（来自 list_panes）。",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"pid":{"type":"integer"},"block":{"type":"string"},"verbose":{"type":"boolean","description":"要 Claude 原话时传 true"}},"additionalProperties":false}`),
+			Description: "读某个 Claude 的结论（pid 或 block）。verbose 只在用户要原话时传。",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"pid":{"type":"integer"},"block":{"type":"string"},"verbose":{"type":"boolean"}}}`),
 			Run:         e.readClaude,
 		},
 		{
 			Name:        "send_to_pane",
-			Description: "把一句话打进某个窗格并回车（比如给 Claude 下一条指令、斜杠命令）。目标是 Claude 窗格、或文字含部署 / 上线 / 生产 / 删除 / push / sudo 这类词时，调用前必须先把原文逐字复述给用户、得到明确同意；往 shell 窗格发普通命令直接发，发完说一句发了什么。发往 shell 窗格的破坏性命令会被拒，让用户回 Mac 手打。",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"text":{"type":"string"}},"required":["block","text"],"additionalProperties":false}`),
+			Description: "往窗格打一句话并回车；发给 Claude 或含部署类词的先逐字复述、用户确认再调。",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"text":{"type":"string"}}}`),
 			Run:         e.sendToPane,
 		},
 	}, e.controlTools()...)
 }
 
-var noParams = json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
+var noParams = json.RawMessage(`{"type":"object","properties":{}}`)
 
 func (e *env) rexJSON(ctx context.Context, v any, args ...string) error {
 	out, err := e.Exec(ctx, "rex", args...)
@@ -363,8 +369,8 @@ func paneDoing(p pane) string {
 }
 
 const (
-	defaultPaneLines = 40
-	maxPaneRunes     = 6000
+	defaultPaneLines = 25
+	maxPaneRunes     = 2500
 )
 
 func (e *env) readPane(ctx context.Context, args json.RawMessage) (any, error) {

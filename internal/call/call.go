@@ -35,6 +35,13 @@ type callState struct {
 
 	name string // call.start's name for the user; "" = config.json's. Memory only, reused on rotation.
 
+	start     time.Time // call.start, for the cost frame's seconds and calls.log
+	costBase  float64   // Cost() of sessions already rotated away
+	lastInput int       // input tokens of the latest ResponseDone; a big context triggers rotation
+	costAt    time.Time // last periodic cost frame
+	sentUSD   float64   // last cost frame sent
+	sentSecs  int
+
 	echoFrames int
 	echoQ      chan echoFrame // replayed in order by echoLoop; closed when the call ends
 	lastReport time.Time
@@ -99,7 +106,7 @@ func (s *server) startCall(r startReq) {
 		}
 	}
 	now := time.Now()
-	c := &callState{lastAudio: now, lastReport: now, echo: s.cfg.Echo, vc: vc, name: r.Name}
+	c := &callState{lastAudio: now, lastReport: now, echo: s.cfg.Echo, vc: vc, name: r.Name, start: timeNow(), costAt: now}
 	s.call = c
 	s.log.Info("call started", "echo", c.echo, "provider", vc.Provider, "model", vc.Model, "voice", vc.Voice, "phone_key", r.APIKey != "")
 	if c.echo {
@@ -163,6 +170,8 @@ func (s *server) dialed(c *callState, sid int, sess voice.Session, err error) {
 	old := c.sess
 	c.sess, c.sid, c.rotating, c.lastFrame, c.muted = sess, sid, false, time.Time{}, false
 	if old != nil {
+		c.costBase += old.Cost() // before Close: the banner total must not drop
+		c.lastInput = 0
 		old.Close()
 		s.log.Info("voice session rotated")
 	} else {
@@ -202,6 +211,12 @@ func (s *server) handlers(sid int) voice.Handlers {
 		AssistantText: transcript("assistant"),
 		UserText:      transcript("user"),
 		SpeechStarted: func() { on(s.onSpeechStarted) },
+		ResponseDone: func(u voice.Usage) {
+			on(func(c *callState) {
+				c.lastInput = u.Input
+				s.sendCost(c)
+			})
+		},
 		TurnDone: func() {
 			on(func(c *callState) {
 				s.flushAudio(c)
@@ -239,6 +254,19 @@ func (s *server) setState(c *callState, state string) {
 		c.state = state
 		s.sendCtl(map[string]any{"t": "status", "state": state})
 	}
+}
+
+// sendCost tells the phone this call's running total; only when usd or the whole seconds moved.
+func (s *server) sendCost(c *callState) {
+	if c.sess == nil {
+		return
+	}
+	usd, secs := c.costBase+c.sess.Cost(), timeNow().Sub(c.start).Seconds()
+	if usd == c.sentUSD && int(secs) == c.sentSecs {
+		return
+	}
+	c.sentUSD, c.sentSecs = usd, int(secs)
+	s.sendCtl(map[string]any{"t": "cost", "usd": usd, "seconds": secs})
 }
 
 // onModelAudio cuts model audio into ≤ 960-byte frames.
@@ -313,6 +341,10 @@ func (s *server) fillTick() <-chan time.Time {
 // Fill does not count as audio for the idle timers.
 func (s *server) onFillTick(now time.Time) {
 	c := s.call
+	if now.Sub(c.costAt) >= costEvery { // Grok bills by the minute, so its total grows without responses
+		c.costAt = now
+		s.sendCost(c)
+	}
 	if c.sess == nil || c.rotating || c.lastFrame.IsZero() {
 		return
 	}
@@ -363,17 +395,18 @@ func (s *server) onTick(now time.Time) {
 		s.sendCtl(map[string]any{"t": "transcript", "who": "assistant", "text": fmt.Sprintf("echo: 收到 %d 帧", c.echoFrames)})
 	}
 	// Providers cap a session (MaxAge); swap rotateMargin before that, only between turns so no answer is cut.
+	// A context past rotateInput tokens is swapped too: every answer re-bills the whole context.
 	if c.sess == nil || c.rotating || c.state != "listening" || !now.After(c.rotateOK) {
 		return
 	}
-	if limit := c.sess.MaxAge() - rotateMargin; limit > 0 && c.sess.Age() >= limit {
+	if limit := c.sess.MaxAge() - rotateMargin; (limit > 0 && c.sess.Age() >= limit) || c.lastInput >= rotateInput {
 		c.rotating = true
 		var b strings.Builder
-		fmt.Fprintf(&b, "\n\n（系统提示：通话超过 %d 分钟换了新会话，下面是刚才最后几轮，接着聊，不要提换会话的事）", int(limit.Minutes()))
+		b.WriteString("\n\n（系统提示：通话中换了新会话，下面是刚才最后几轮，接着聊，不要提换会话的事）")
 		for _, t := range c.sess.RecentTurns(5) {
 			fmt.Fprintf(&b, "\n%s：%s", map[string]string{"user": "用户", "assistant": "你"}[t.Role], t.Text)
 		}
-		s.log.Info("rotating voice session", "age", c.sess.Age().Round(time.Second))
+		s.log.Info("rotating voice session", "age", c.sess.Age().Round(time.Second), "input", c.lastInput)
 		recent := b.String()
 		s.dialSession(c, func() string { return s.instructions(c.name) + recent })
 	}
@@ -404,6 +437,7 @@ func (s *server) endCall(reason string) {
 		c.hangup.Stop()
 	}
 	if c.sess != nil {
+		s.logCall(c)
 		c.sess.Close()
 	}
 	if c.echoQ != nil {

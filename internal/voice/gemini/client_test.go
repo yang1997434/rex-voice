@@ -400,7 +400,7 @@ func TestUsageLine(t *testing.T) {
 	var log bytes.Buffer
 	got := make(chan voice.Usage, 1)
 	turn := make(chan struct{}, 1)
-	f.dial(t, voice.Config{UsageLog: &log, Handlers: voice.Handlers{ResponseDone: func(u voice.Usage) { got <- u }, TurnDone: func() { turn <- struct{}{} }}})
+	s, _ := f.dial(t, voice.Config{UsageLog: &log, Handlers: voice.Handlers{ResponseDone: func(u voice.Usage) { got <- u }, TurnDone: func() { turn <- struct{}{} }}})
 	// Real turnComplete shape, 11-01.
 	f.push(t, `{"serverContent":{"turnComplete":true},"usageMetadata":{"promptTokenCount":542,"responseTokenCount":150,"totalTokenCount":692,`+
 		`"promptTokensDetails":[{"modality":"TEXT","tokenCount":329},{"modality":"AUDIO","tokenCount":168}],`+
@@ -411,6 +411,9 @@ func TestUsageLine(t *testing.T) {
 		USD: (329*0.75 + 168*3 + 150*12 + 74*4.5) / 1e6}
 	if u.USD-want.USD > 1e-12 || want.USD-u.USD > 1e-12 {
 		t.Errorf("USD = %v, want %v", u.USD, want.USD)
+	}
+	if c := s.Cost(); c != u.USD {
+		t.Errorf("Cost = %v, want %v", c, u.USD)
 	}
 	if u.USD = want.USD; u != want {
 		t.Errorf("usage = %+v, want %+v", u, want)

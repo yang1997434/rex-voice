@@ -95,7 +95,12 @@ func chat(args []string) int {
 
 	hung := make(chan string, 1)
 	reg := &tools.Registry{}
-	for _, t := range tools.NewRexTools(tools.Options{Audit: os.Stderr, ForbidExtra: c.ForbidExtra}) {
+	// Same spoken-summary wiring as serve, with chat's own key so the text mode exercises it too.
+	summarize := tools.NewSummarizer(func() string {
+		k, _, _ := config.ProviderKey(os.Getenv, config.ProviderKeychain(string(voice.Qwen)), string(voice.Qwen))
+		return k
+	}, tools.SummaryModel, usageLog(), slog.Default())
+	for _, t := range tools.NewRexTools(tools.Options{Audit: os.Stderr, ForbidExtra: c.ForbidExtra, Summarize: summarize}) {
 		reg.Register(t)
 	}
 	instr := voice.Build(c.Name, c.ProjectAliases, projectLabels())

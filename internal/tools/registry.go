@@ -101,7 +101,7 @@ func lastRunes(s string, n int) string {
 	return string(r[len(r)-n:])
 }
 
-// decodeArgs rejects unknown fields, matching the schemas' additionalProperties:false.
+// decodeArgs rejects unknown fields; the schemas leave out additionalProperties / required to save tokens, so this is the check.
 func decodeArgs(args json.RawMessage, v any) error {
 	d := json.NewDecoder(strings.NewReader(string(args)))
 	d.DisallowUnknownFields()
@@ -115,8 +115,8 @@ func decodeArgs(args json.RawMessage, v any) error {
 func HangUpDef(run func(reason string)) Tool {
 	return Tool{
 		Name:        "hang_up",
-		Description: "挂断这通电话。用户说「挂断吧 / 先这样 / 拜拜 / 不聊了」之类时，先说一句简短的告别，再调用这个工具。",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"reason":{"type":"string","description":"挂断原因，可省略"}},"additionalProperties":false}`),
+		Description: "挂断电话，先告别再调。",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"reason":{"type":"string"}}}`),
 		Run: func(_ context.Context, args json.RawMessage) (any, error) {
 			var a struct {
 				Reason string `json:"reason"`

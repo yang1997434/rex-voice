@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/url"
 	"regexp"
@@ -49,6 +50,10 @@ type Config struct {
 	// call.start and session rotation, so the prompt sees what is running now. name is call.start's
 	// name for the user, "" when the phone sent none (use config.json's).
 	Instructions func(name string) string
+
+	// CallsLog gets one JSON line per ended call (protocol section 3, calls.log); nil = none. When it
+	// is a file (has Name), hello's stats frame is summed from that file.
+	CallsLog io.Writer
 }
 
 // Timings; tests shorten them.
@@ -71,6 +76,9 @@ var (
 	hangupGrace    = 8 * time.Second        // hang_up waits at most this long for the model's goodbye (TurnDone)
 	watchEvery     = 5 * time.Second        // Claude watch poll interval
 	notifyEvery    = 10 * time.Minute       // at most one notify per pane and question (msg) in this window
+	costEvery      = 10 * time.Second       // periodic cost frame during a call
+	rotateInput    = 6000                   // rotate between turns once a response's input reaches this many tokens
+	timeNow        = time.Now               // cost seconds and stats windows; tests pin it
 )
 
 type server struct {
@@ -426,6 +434,7 @@ func (s *server) onHello(deviceID, app, device string) {
 	} else { // a phone that still thinks it is in a call (it missed hang_up while locked) must not restart it
 		s.sendCtl(map[string]any{"t": "status", "state": "ended"})
 	}
+	s.sendStats()
 	for _, b := range s.asks {
 		s.sendAsk(b)
 	}

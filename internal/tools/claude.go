@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -101,8 +102,6 @@ func mergeStatus(claude, rexState string) string {
 type claudeEntry struct {
 	Pid     int            `json:"pid"`
 	Project string         `json:"project"`
-	Cwd     string         `json:"cwd"`
-	Started string         `json:"started"`
 	Name    string         `json:"name"`
 	Status  string         `json:"status"`
 	Session *sessionHeader `json:"session,omitempty"`
@@ -131,7 +130,7 @@ func (e *env) listClaude(ctx context.Context, args json.RawMessage) (any, error)
 		if cwd == "" {
 			continue // process exited or not ours to read
 		}
-		c := claudeEntry{Pid: p.pid, Project: filepath.Base(cwd), Cwd: cwd, Started: p.started, Name: s.Name, Status: normStatus(s.Status)}
+		c := claudeEntry{Pid: p.pid, Project: filepath.Base(cwd), Name: s.Name, Status: normStatus(s.Status)}
 		if files := e.transcripts(s, cwd, 1); len(files) > 0 {
 			if sum, err := summarize(files[0].path, files[0].mtime); err == nil {
 				c.Session = &sessionHeader{sum.Title, sum.LastActive}
@@ -195,6 +194,8 @@ type claudeSummary struct {
 	Asked       string   `json:"asked"`
 	Reply       string   `json:"reply"`
 	Detail      []string `json:"detail,omitempty"`
+
+	full string // newest assistant text uncut, for Summarize
 }
 
 var (
@@ -288,6 +289,7 @@ func (e *env) readClaude(ctx context.Context, args json.RawMessage) (any, error)
 			return nil, err
 		}
 		sum.Status, sum.SessionName = status, s.Name
+		sum.Reply = e.spoken(ctx, f, sum)
 		if !a.Verbose {
 			sum.Detail = nil
 		}
@@ -297,6 +299,34 @@ func (e *env) readClaude(ctx context.Context, args json.RawMessage) (any, error)
 		return nil, errors.New(noRecent)
 	}
 	return out, nil
+}
+
+const sumCacheMax = 64
+
+// spoken is sum.Reply through Options.Summarize, cached per transcript version; without Summarize,
+// with nothing to say, or when it fails, the cut reply stays.
+func (e *env) spoken(ctx context.Context, f transcriptFile, sum claudeSummary) string {
+	if e.Summarize == nil || sum.Reply == "" {
+		return sum.Reply
+	}
+	key := f.path + "@" + strconv.FormatInt(f.mtime.UnixNano(), 10)
+	e.sumMu.Lock()
+	out, ok := e.sumCache[key]
+	e.sumMu.Unlock()
+	if ok {
+		return out
+	}
+	out, err := e.Summarize(ctx, sum.full)
+	if err != nil { // already logged by the summarizer; not cached, so the next read retries
+		return sum.Reply
+	}
+	e.sumMu.Lock()
+	if e.sumCache == nil || len(e.sumCache) >= sumCacheMax {
+		e.sumCache = map[string]string{}
+	}
+	e.sumCache[key] = out
+	e.sumMu.Unlock()
+	return out
 }
 
 // tailChunk is a var so tests can force lines to straddle chunk boundaries.
@@ -329,10 +359,26 @@ func rowText(content json.RawMessage) string {
 	return strings.TrimSpace(strings.Join(texts, "\n"))
 }
 
+var timeNow = time.Now // last_active is relative; tests pin it
+
+// ago is how long since t, the way it is said on the phone.
+func ago(t time.Time) string {
+	switch d := timeNow().Sub(t); {
+	case d < time.Minute:
+		return "刚刚"
+	case d < time.Hour:
+		return fmt.Sprintf("%d 分钟前", int(d/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d 小时前", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%d 天前", int(d/(24*time.Hour)))
+	}
+}
+
 // summarize reads the transcript backwards in chunks and stops once it has the last title,
 // the last user instruction and two assistant texts, so multi-MB transcripts are not read whole.
 func summarize(path string, mtime time.Time) (claudeSummary, error) {
-	sum := claudeSummary{LastActive: mtime.Format(time.RFC3339), Detail: []string{}}
+	sum := claudeSummary{LastActive: ago(mtime), Detail: []string{}}
 	f, err := os.Open(path)
 	if err != nil {
 		return sum, err
@@ -393,7 +439,7 @@ func summarize(path string, mtime time.Time) (claudeSummary, error) {
 		sum.Title = truncRunes(firstUser, 60)
 	}
 	sum.Asked = truncRunes(strings.Join(strings.Fields(lastUser), " "), 80)
-	sum.Reply = truncRunes(cleanText(lastReply), 400)
+	sum.Reply, sum.full = truncRunes(cleanText(lastReply), 400), lastReply
 	for i := len(asst) - 1; i >= 0; i-- {
 		sum.Detail = append(sum.Detail, asst[i])
 	}

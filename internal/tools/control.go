@@ -20,34 +20,28 @@ func (e *env) controlTools() []Tool {
 	keys, _ := json.Marshal(sendKeysAllowed)
 	return []Tool{
 		{
-			Name: "open_pane",
-			Description: "在某个 Rex 会话里开一个新标签页：kind=claude（默认）开一个 Claude Code（跳过权限确认），kind=shell 开一个终端。" +
-				"session 填 list_panes 返回的 session（会话名）；project 是 " + e.Workspace + " 下的项目目录名（如 geo、rex-voice），也可以是家目录下的绝对路径；" +
-				"name 是新窗格的名字（Claude 的会话名也用它），不填就用项目名。开之前先跟用户确认会话和项目。返回新窗格的 block。",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"session":{"type":"string"},"project":{"type":"string"},"kind":{"type":"string","enum":["claude","shell"]},"name":{"type":"string"}},"required":["session","project"],"additionalProperties":false}`),
-			Run:        e.openPane,
+			Name:        "open_pane",
+			Description: "在 Rex 会话里开新标签页跑 Claude（默认）或 shell，project 是项目目录名，先跟用户确认。",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"session":{"type":"string"},"project":{"type":"string"},"kind":{"type":"string","enum":["claude","shell"]},"name":{"type":"string"}}}`),
+			Run:         e.openPane,
 		},
 		{
-			Name: "close_pane",
-			Description: "关窗格。scope=pane（默认）只关这个窗格，window 关它所在的整个标签页，session 关整个 Rex 会话（里面所有窗格）。" +
-				"调用前先跟用户确认要关哪个。范围里有窗格正在干活（working）会被拒、返回 refused；用户明确说还是要关，再带 force=true 调一次。",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"scope":{"type":"string","enum":["pane","window","session"]},"force":{"type":"boolean"}},"required":["block"],"additionalProperties":false}`),
-			Run:        e.closePane,
+			Name:        "close_pane",
+			Description: "关窗格 / 标签页（window）/ 会话（session），先确认；在干活被拒，用户坚持再带 force。",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"scope":{"type":"string","enum":["pane","window","session"]},"force":{"type":"boolean"}}}`),
+			Run:         e.closePane,
 		},
 		{
-			Name: "rename",
-			Description: "给 Rex 里的东西改名：target=session 改会话名（id 填 list_panes 的 session），window 改标签页名（id 填这个标签页里任一窗格的 block），pane 改窗格名（id 填 block）。" +
-				"只改 Rex 里显示的名字；要改 Claude 自己的会话名，往那个 Claude 窗格 send_to_pane 发「/rename 新名」。",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"target":{"type":"string","enum":["session","window","pane"]},"id":{"type":"string"},"name":{"type":"string"}},"required":["target","id","name"],"additionalProperties":false}`),
-			Run:        e.rename,
+			Name:        "rename",
+			Description: "改 Rex 里会话 / 标签页 / 窗格的名字，id 是会话名或 block。",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"target":{"type":"string","enum":["session","window","pane"]},"id":{"type":"string"},"name":{"type":"string"}}}`),
+			Run:         e.rename,
 		},
 		{
-			Name: "send_keys",
-			Description: "往窗格按键，用来回答 Claude 的提问框（AskUserQuestion）、计划审批、/model /effort 弹出的选择框：先 read_pane 看选项念给用户；" +
-				"按数字键直接选中那个编号的选项（不用再按 enter），先 read_pane 看清编号再按，不用 up / down 盲选；escape 取消提问框，也能打断正在干活的 Claude；" +
-				"shift+tab 切换 Claude 的权限模式；ctrl+c 中断 shell 里的命令。keys 按顺序按，比如 [\"2\"]。y / n 在 Claude 提问框里不起作用，不支持。",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"keys":{"type":"array","minItems":1,"items":{"type":"string","enum":` + string(keys) + `}}},"required":["block","keys"],"additionalProperties":false}`),
-			Run:        e.sendKeys,
+			Name:        "send_keys",
+			Description: "按键：数字键选选择框编号，escape 取消或打断，shift+tab 切权限模式，ctrl+c 中断 shell。",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"block":{"type":"string"},"keys":{"type":"array","items":{"type":"string","enum":` + string(keys) + `}}}}`),
+			Run:         e.sendKeys,
 		},
 	}
 }

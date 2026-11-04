@@ -317,12 +317,15 @@ func TestResponseEnded(t *testing.T) {
 	f := newFake(t)
 	turn := make(chan struct{}, 4)
 	usage := make(chan voice.Usage, 4)
-	f.dial(t, voice.Config{Handlers: voice.Handlers{TurnDone: func() { turn <- struct{}{} }, ResponseDone: func(u voice.Usage) { usage <- u }}})
+	s := f.dial(t, voice.Config{Handlers: voice.Handlers{TurnDone: func() { turn <- struct{}{} }, ResponseDone: func(u voice.Usage) { usage <- u }}})
 	f.push(t, `{"type":"response.ended","data":{"status":"aborted","run_id":1,"turn_id":1}}`)
 	if u := wait(t, usage, "ResponseDone"); u != (voice.Usage{Unpriced: true}) {
 		t.Errorf("usage = %+v", u)
 	}
 	wait(t, turn, "TurnDone")
+	if c := s.Cost(); c != 0 {
+		t.Errorf("Cost = %v, want 0 (unpriced)", c)
+	}
 }
 
 func TestPlaybackReceipts(t *testing.T) {

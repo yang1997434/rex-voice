@@ -310,6 +310,21 @@ func TestUsagePerMinute(t *testing.T) {
 	}
 }
 
+// Cost is billed by connection time, so it grows with Age between responses.
+func TestCostGrowsWithAge(t *testing.T) {
+	f := newFake(t)
+	s, _ := f.dial(t, voice.Config{TextOnly: true})
+	c1 := s.Cost()
+	time.Sleep(30 * time.Millisecond)
+	c2, age := s.Cost(), s.Age()
+	if c1 <= 0 || c2 <= c1 {
+		t.Errorf("Cost %v then %v, want growing", c1, c2)
+	}
+	if want := age.Seconds() / 60 * 0.08; c2 > want || want-c2 > 1e-6 {
+		t.Errorf("Cost = %v, want about %v (age %v)", c2, want, age)
+	}
+}
+
 func TestDialRejected(t *testing.T) {
 	srv := httptest.NewServer(websocket.Handler(func(ws *websocket.Conn) {
 		var raw string

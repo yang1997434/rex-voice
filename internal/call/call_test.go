@@ -319,6 +319,7 @@ func (e *env) ready(t *testing.T) *phone {
 	ph.handshake(t)
 	ph.hello(t, "phone-1")
 	ph.expectStatus(t, "ended") // no call: told so, in case the phone thinks otherwise
+	ph.ctlUntil(t, "stats")
 	return ph
 }
 

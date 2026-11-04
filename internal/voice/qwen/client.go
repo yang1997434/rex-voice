@@ -57,6 +57,7 @@ type Session struct {
 	mu     sync.Mutex
 	closed bool
 	turns  []voice.Turn
+	usd    float64 // summed response.done estimates, for Cost
 
 	// Owned by the event goroutine.
 	pending  map[string][]funcCall // response_id -> function calls seen in that response
@@ -205,6 +206,19 @@ func turnDetection(model string) string {
 
 // Age is the time since Dial.
 func (s *Session) Age() time.Duration { return time.Since(s.start) }
+
+// Cost is the summed estimate of this session's responses so far.
+func (s *Session) Cost() float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usd
+}
+
+func (s *Session) addCost(usd float64) {
+	s.mu.Lock()
+	s.usd += usd
+	s.mu.Unlock()
+}
 
 func (s *Session) MaxAge() time.Duration { return maxAge }
 
@@ -489,6 +503,7 @@ func (s *Session) onResponseDone(ev event) {
 	}
 	h := s.cfg.Handlers
 	u := r.Usage.toUsage(s.cfg.Model)
+	s.addCost(u.USD)
 	s.writeUsage(u)
 	if h.ResponseDone != nil {
 		h.ResponseDone(u.public())

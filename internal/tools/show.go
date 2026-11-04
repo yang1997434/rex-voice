@@ -27,8 +27,8 @@ func ShowFileDef(opts Options, send func(name string, jpeg []byte) (chunks int, 
 	}
 	return Tool{
 		Name:        "show_file",
-		Description: "把这台 Mac 上的一张图片（png / jpg / heic / webp，不超过 20 MB）发到用户手机上显示。用户要看截图 / 图片时用，路径从 read_claude 的原话里找；只在通话中可用。",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"图片的绝对路径，可以用 ~ 开头"}},"required":["path"],"additionalProperties":false}`),
+		Description: "把 Mac 上一张图片发到用户手机，path 可用 ~。",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
 		Run: func(ctx context.Context, args json.RawMessage) (any, error) {
 			var a struct {
 				Path string `json:"path"`
@@ -84,8 +84,8 @@ func ShowFileDef(opts Options, send func(name string, jpeg []byte) (chunks int, 
 func ShowLinkDef(send func(url, title string) error) Tool {
 	return Tool{
 		Name:        "show_link",
-		Description: "把一个网页链接发到用户手机上，用户点开看。汇报页、PR 链接这类要用户自己看的用这个，不要把网址念出来；只收 http / https，只在通话中可用。",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"},"title":{"type":"string","description":"链接标题，可省略"}},"required":["url"],"additionalProperties":false}`),
+		Description: "把网页链接发到用户手机，不要念网址。",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"},"title":{"type":"string"}}}`),
 		Run: func(_ context.Context, args json.RawMessage) (any, error) {
 			var a struct {
 				URL   string `json:"url"`

@@ -69,6 +69,7 @@ type Session interface {
 	Age() time.Duration
 	MaxAge() time.Duration // provider's session cap; 0 = no cap
 	RecentTurns(n int) []Turn
+	Cost() float64 // estimated USD of this session so far; 0 without a price entry
 }
 
 type Turn struct{ Role, Text string } // Role is "user" or "assistant"

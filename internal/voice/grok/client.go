@@ -176,6 +176,15 @@ func (s *Session) sessionConfig() map[string]any {
 // Age is the time since Dial.
 func (s *Session) Age() time.Duration { return time.Since(s.start) }
 
+// Cost is the connection time so far plus text items, at the per-minute price.
+func (s *Session) Cost() float64 {
+	s.mu.Lock()
+	texts := s.texts
+	s.mu.Unlock()
+	usd, _ := cost(s.cfg.Model, s.Age().Seconds(), texts)
+	return usd
+}
+
 func (s *Session) MaxAge() time.Duration { return maxAge }
 
 // SetMuted is a no-op: server VAD only needs the session layer's silence fill.

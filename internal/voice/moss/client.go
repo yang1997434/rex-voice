@@ -212,6 +212,9 @@ func (s *Session) await(want string) (fields, error) {
 // Age is the time since Dial.
 func (s *Session) Age() time.Duration { return time.Since(s.start) }
 
+// Cost is 0: MOSS-Live is free for now and has no price list.
+func (s *Session) Cost() float64 { return 0 }
+
 func (s *Session) MaxAge() time.Duration { return 0 }
 
 // Done is closed when the event loop has stopped (read error or Close).

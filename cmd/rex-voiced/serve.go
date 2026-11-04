@@ -68,8 +68,17 @@ func serve(args []string) int {
 	}
 
 	audit := logFile("audit.log")
+	opts := tools.Options{Audit: audit, ForbidExtra: c.ForbidExtra}
+	if !*echo {
+		// read_claude's spoken summary uses the Mac's Qwen key, never the phone's; none = cut reply only.
+		// Looked up per call like cfg.Key below, so a key stored after start is picked up without a restart.
+		opts.Summarize = tools.NewSummarizer(func() string {
+			key, _, _ := config.ProviderKey(os.Getenv, config.ProviderKeychain(string(voice.Qwen)), string(voice.Qwen))
+			return key
+		}, tools.SummaryModel, usageLog(), log)
+	}
 	reg := &tools.Registry{}
-	for _, t := range tools.NewRexTools(tools.Options{Audit: audit, ForbidExtra: c.ForbidExtra}) {
+	for _, t := range tools.NewRexTools(opts) {
 		reg.Register(t)
 	}
 	cfg := call.Config{
@@ -82,6 +91,7 @@ func serve(args []string) int {
 		Watch:       true, // tell the user when a Claude pane turns blocked; off with -echo
 		Logger:      log,
 		Version:     version,
+		CallsLog:    logFile("calls.log"),
 	}
 	if !*echo {
 		cfg.Instructions = func(name string) string {

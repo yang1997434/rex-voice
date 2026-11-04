@@ -314,7 +314,7 @@ func TestUsage(t *testing.T) {
 	f := newFake(t, true)
 	var log bytes.Buffer
 	got := make(chan voice.Usage, 1)
-	f.dial(t, voice.Config{TextOnly: true, UsageLog: &log, Handlers: voice.Handlers{ResponseDone: func(u voice.Usage) { got <- u }}})
+	s := f.dial(t, voice.Config{TextOnly: true, UsageLog: &log, Handlers: voice.Handlers{ResponseDone: func(u voice.Usage) { got <- u }}})
 	f.push(t, `{"type":"response.done","response":{"id":"r1","usage":{"input_tokens":1000,"output_tokens":200,`+
 		`"input_token_details":{"cached_tokens":400,"text_tokens":1000,"audio_tokens":0,"cached_tokens_details":{"text_tokens":400,"audio_tokens":0}},`+
 		`"output_token_details":{"text_tokens":200,"audio_tokens":0}}}}`)
@@ -331,6 +331,9 @@ func TestUsage(t *testing.T) {
 	// (600*4 + 400*0.4 + 200*16) / 1e6
 	if d := u.USD - 0.00576; d > 1e-12 || d < -1e-12 {
 		t.Errorf("usd = %v", u.USD)
+	}
+	if c := s.Cost(); c != u.USD { // summed before ResponseDone runs
+		t.Errorf("Cost = %v, want %v", c, u.USD)
 	}
 	line := log.String() // written before ResponseDone, so the channel receive orders it
 	var l usageLine

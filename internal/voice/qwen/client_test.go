@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -498,13 +499,17 @@ func TestUsageLine(t *testing.T) {
 	f := newFake(t, updated)
 	var log bytes.Buffer
 	got := make(chan voice.Usage, 1)
-	f.dial(t, voice.Config{UsageLog: &log, Handlers: voice.Handlers{ResponseDone: func(u voice.Usage) { got <- u }}})
+	s := f.dial(t, voice.Config{UsageLog: &log, Handlers: voice.Handlers{ResponseDone: func(u voice.Usage) { got <- u }}})
 	// Real response.done usage shape, 11-01.
 	f.push(t, `{"type":"response.done","response":{"id":"r1","status":"completed","usage":{"total_tokens":804,"input_tokens":693,"output_tokens":111,`+
 		`"input_tokens_details":{"text_tokens":693},"output_tokens_details":{"text_tokens":25,"audio_tokens":86}}}}`)
 	u := wait(t, got, "ResponseDone")
 	if want := (voice.Usage{Input: 693, TextIn: 693, Output: 111, TextOut: 25, AudioOut: 86, USD: u.USD}); u != want || u.USD == 0 {
 		t.Errorf("usage = %+v", u)
+	}
+	// (693*1.5 + 25*4.5 + 86*12) / 7.2 / 1e6, CNY price table
+	if c, want := s.Cost(), (693*1.5+25*4.5+86*12)/7.2/1e6; math.Abs(c-want) > 1e-12 || c != u.USD {
+		t.Errorf("Cost = %v, want %v", c, want)
 	}
 	line := log.String() // written before ResponseDone, so the channel receive orders it
 	var l usageLine
@@ -513,6 +518,20 @@ func TestUsageLine(t *testing.T) {
 	}
 	if l.Model != testModel || l.Input != 693 || l.AudioOut != 86 || l.TextOut != 25 || l.USD != u.USD || l.Unpriced {
 		t.Errorf("usage line = %+v", l)
+	}
+}
+
+// A model without a price entry still reports usage, and Cost stays 0.
+func TestCostUnpriced(t *testing.T) {
+	f := newFake(t, updated)
+	got := make(chan voice.Usage, 1)
+	s := f.dial(t, voice.Config{Model: "qwen-nope-realtime", Handlers: voice.Handlers{ResponseDone: func(u voice.Usage) { got <- u }}})
+	f.push(t, `{"type":"response.done","response":{"id":"r1","status":"completed","usage":{"input_tokens":693,"output_tokens":111}}}`)
+	if u := wait(t, got, "ResponseDone"); !u.Unpriced || u.USD != 0 {
+		t.Errorf("usage = %+v", u)
+	}
+	if c := s.Cost(); c != 0 {
+		t.Errorf("Cost = %v, want 0", c)
 	}
 }
 

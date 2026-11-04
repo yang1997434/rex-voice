@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // Fixture ids, recorded from this Mac on 2026-11-01 (see testdata).
@@ -259,11 +260,14 @@ func TestListClaude(t *testing.T) {
 		byPid[c.Pid] = c
 	}
 	v := byPid[26673]
-	if v.Project != "rex-voice" || v.Name != "rex-voice-b4" || v.Status != "busy" || v.Started != "Sun Nov  1 18:19:32 2026" ||
+	if out := call(t, r, "list_claude", "", nil); strings.Contains(out, `"cwd"`) || strings.Contains(out, `"started"`) {
+		t.Errorf("list_claude still has cwd / started: %s", out)
+	}
+	if v.Project != "rex-voice" || v.Name != "rex-voice-b4" || v.Status != "busy" ||
 		v.Session == nil || v.Session.Title != "rex-voice-ios-app" {
 		t.Errorf("26673 = %+v %+v", v, v.Session)
 	}
-	if g := byPid[41052]; g.Cwd != "/Users/andy/data/claude/geo-us" || g.Status != "unknown" || g.Session != nil {
+	if g := byPid[41052]; g.Project != "geo-us" || g.Status != "unknown" || g.Session != nil {
 		t.Errorf("41052 (lsof fallback) = %+v", g)
 	}
 	if g := byPid[420]; g.Name != "geo us" || g.Status != "idle" {
@@ -374,7 +378,7 @@ func TestReadClaudeFallbackByMtime(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("%d summaries, want 2 (old one excluded)", len(got))
 	}
-	if !(got[0].LastActive > got[1].LastActive) {
+	if got[0].LastActive != "1 分钟前" || got[1].LastActive != "10 分钟前" {
 		t.Errorf("not newest first: %s, %s", got[0].LastActive, got[1].LastActive)
 	}
 	for _, s := range got {
@@ -787,5 +791,38 @@ func TestOpenPaneSymlinks(t *testing.T) {
 	call(t, r, "open_pane", `{"session":"`+sDev+`","project":"`+filepath.Join(home, "datalink", "claude", "geo")+`"}`, &got)
 	if got["block"] != newBlock {
 		t.Errorf("via link: %v, runs %v", got, f.cmds("rex run"))
+	}
+}
+
+// All 12 tool definitions go out as input tokens on every answer (11-04: 95% of Qwen input is text).
+func TestDefsSize(t *testing.T) {
+	r := &Registry{}
+	opts := Options{Home: "/Users/andy", Exec: newFake().exec}
+	for _, tl := range NewRexTools(opts) {
+		r.Register(tl)
+	}
+	r.Register(HangUpDef(func(string) {}))
+	r.Register(ShowFileDef(opts, func(string, []byte) (int, error) { return 0, nil }))
+	r.Register(ShowLinkDef(func(string, string) error { return nil }))
+	defs, _ := json.Marshal(r.Defs())
+	if n := len(r.Defs()); n != 12 {
+		t.Fatalf("%d tools, want 12", n)
+	}
+	if n := utf8.RuneCount(defs); n > 2500 {
+		t.Errorf("Defs JSON is %d runes, want <= 2500", n)
+	}
+	t.Logf("Defs JSON %d runes", utf8.RuneCount(defs))
+}
+
+func TestAgo(t *testing.T) {
+	at := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	old := timeNow
+	timeNow = func() time.Time { return at }
+	t.Cleanup(func() { timeNow = old })
+	for d, want := range map[time.Duration]string{30 * time.Second: "刚刚", 3*time.Minute + 50*time.Second: "3 分钟前",
+		2*time.Hour + 59*time.Minute: "2 小时前", 50 * time.Hour: "2 天前"} {
+		if got := ago(at.Add(-d)); got != want {
+			t.Errorf("ago(%v) = %q, want %q", d, got, want)
+		}
 	}
 }
