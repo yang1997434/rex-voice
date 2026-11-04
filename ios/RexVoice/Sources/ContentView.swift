@@ -205,12 +205,17 @@ struct ContentView: View {
                 Text(phase.hint).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                Text(elapsed(since: callStart, now: ctx.date))
-                    .font(.subheadline.weight(.semibold).monospacedDigit())
-                    .padding(.horizontal, 10)
-                    .frame(minHeight: 28)
-                    .background(Capsule().fill(chipFill))
+            VStack(alignment: .trailing, spacing: 3) {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    Text(elapsed(since: callStart, now: ctx.date))
+                        .font(.subheadline.weight(.semibold).monospacedDigit())
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 28)
+                        .background(Capsule().fill(chipFill))
+                }
+                if let cost = controller.callCost, cost.usd > 0 {
+                    Text(yuan(cost.usd)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.horizontal, 16)

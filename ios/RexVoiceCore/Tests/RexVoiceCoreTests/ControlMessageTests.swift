@@ -29,6 +29,10 @@ import Testing
          #"{"t":"answer_result","block":"block:01a1","ok":false,"msg":"没有这个窗格"}"#),
         (.answer(block: "block:01a1", keys: ["2"], text: nil), #"{"t":"answer","block":"block:01a1","keys":["2"]}"#),
         (.answer(block: "block:01a1", keys: nil, text: "先别提交"), #"{"t":"answer","block":"block:01a1","text":"先别提交"}"#),
+        (.cost(usd: 0.1234, seconds: 83.6), #"{"t":"cost","usd":0.1234,"seconds":83.6}"#),
+        (.stats(.init(today: .init(calls: 2, seconds: 310.5, usd: 0.41), week: .init(calls: 5, seconds: 900, usd: 1.2),
+                      month: .init(calls: 0, seconds: 0, usd: 0), byProvider: ["qwen": .init(calls: 2, seconds: 310.5, usd: 0.41)])),
+         #"{"t":"stats","today":{"calls":2,"seconds":310.5,"usd":0.41},"week":{"calls":5,"seconds":900,"usd":1.2},"month":{"calls":0,"seconds":0,"usd":0},"by_provider":{"qwen":{"calls":2,"seconds":310.5,"usd":0.41}}}"#),
     ]
 
     static func object(_ json: Data) throws -> NSDictionary {
@@ -96,6 +100,17 @@ import Testing
     @Test func answerResultWithoutOkThrows() {
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(ControlMessage.self, from: Data(#"{"t":"answer_result","block":"b"}"#.utf8))
+        }
+    }
+
+    @Test func statsWithoutByProviderIsEmptyAndMissingPeriodThrows() throws {
+        let zero = #"{"calls":0,"seconds":0,"usd":0}"#
+        let msg = try JSONDecoder().decode(ControlMessage.self, from: Data(
+            #"{"t":"stats","today":\#(zero),"week":\#(zero),"month":\#(zero)}"#.utf8))
+        let z = ControlMessage.Stats.Bucket(calls: 0, seconds: 0, usd: 0)
+        #expect(msg == .stats(.init(today: z, week: z, month: z, byProvider: [:])))
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ControlMessage.self, from: Data(#"{"t":"stats","today":\#(zero),"week":\#(zero)}"#.utf8))
         }
     }
 

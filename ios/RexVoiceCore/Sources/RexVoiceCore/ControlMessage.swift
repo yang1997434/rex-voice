@@ -33,6 +33,10 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case askDone(block: String)
     /// Outcome of an `answer`; `msg` says why when `ok` is false.
     case answerResult(block: String, ok: Bool, msg: String?)
+    /// Running total of the current call: `usd` spent so far, `seconds` since it started.
+    case cost(usd: Double, seconds: Double)
+    /// Mac-side usage totals, sent after every hello.
+    case stats(Stats)
     /// Any `t` this build does not know; decoding never throws for it.
     case unknown(String)
 
@@ -41,6 +45,33 @@ public enum ControlMessage: Codable, Equatable, Sendable {
         case provider, model, voice, apiKey = "api_key"
         case id, name, mime, size, chunks, url, title
         case block, session, project, options, keys, ok, push
+        case usd, seconds
+    }
+
+    public struct Stats: Codable, Equatable, Sendable {
+        public struct Bucket: Codable, Equatable, Sendable {
+            public var calls: Int
+            public var seconds: Double
+            public var usd: Double
+            public init(calls: Int, seconds: Double, usd: Double) { self.calls = calls; self.seconds = seconds; self.usd = usd }
+        }
+        public var today: Bucket
+        public var week: Bucket
+        public var month: Bucket
+        public var byProvider: [String: Bucket]
+        public init(today: Bucket, week: Bucket, month: Bucket, byProvider: [String: Bucket]) {
+            self.today = today; self.week = week; self.month = month; self.byProvider = byProvider
+        }
+
+        private enum CodingKeys: String, CodingKey { case today, week, month, byProvider = "by_provider" }
+
+        public init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            today = try c.decode(Bucket.self, forKey: .today)
+            week = try c.decode(Bucket.self, forKey: .week)
+            month = try c.decode(Bucket.self, forKey: .month)
+            byProvider = try c.decodeIfPresent([String: Bucket].self, forKey: .byProvider) ?? [:]
+        }
     }
 
     public init(from decoder: any Decoder) throws {
@@ -94,6 +125,8 @@ public enum ControlMessage: Codable, Equatable, Sendable {
         case "answer_result":
             self = .answerResult(block: try c.decode(String.self, forKey: .block), ok: try c.decode(Bool.self, forKey: .ok),
                                  msg: try c.decodeIfPresent(String.self, forKey: .msg))
+        case "cost": self = .cost(usd: try c.decode(Double.self, forKey: .usd), seconds: try c.decode(Double.self, forKey: .seconds))
+        case "stats": self = .stats(try Stats(from: decoder))
         default: self = .unknown(t)
         }
     }
@@ -174,6 +207,13 @@ public enum ControlMessage: Codable, Equatable, Sendable {
             try c.encode(block, forKey: .block)
             try c.encode(ok, forKey: .ok)
             try c.encodeIfPresent(msg, forKey: .msg)
+        case let .cost(usd, seconds):
+            try c.encode("cost", forKey: .t)
+            try c.encode(usd, forKey: .usd)
+            try c.encode(seconds, forKey: .seconds)
+        case let .stats(stats):
+            try c.encode("stats", forKey: .t)
+            try stats.encode(to: encoder)
         case let .unknown(t):
             try c.encode(t, forKey: .t)
         }

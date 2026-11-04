@@ -1,3 +1,4 @@
+import RexVoiceCore
 import SwiftUI
 
 /// The thick small-card surface (transcript card, settings cards): top-lit edge, inner glow, two-layer shadow.
@@ -112,6 +113,7 @@ struct SettingsPage: View {
                     personaSection.id("persona")
                     voiceSection.id("voices")
                     keySection.id("key")
+                    costSection.id("cost")
                     micSection
                     pairSection
                     aboutSection.id("bottom")
@@ -127,7 +129,7 @@ struct SettingsPage: View {
             .safeAreaBar(edge: .top) { header }
             #if DEBUG
             .task {
-                // `REXVOICE_SCROLL=voices|custom|key|bottom` lands a screenshot there.
+                // `REXVOICE_SCROLL=voices|custom|key|cost|bottom` lands a screenshot there.
                 guard let anchor = ProcessInfo.processInfo.environment["REXVOICE_SCROLL"] else { return }
                 try? await Task.sleep(for: .milliseconds(400))
                 proxy.scrollTo(anchor, anchor: anchor == "custom" ? .bottom : .top)
@@ -427,6 +429,56 @@ struct SettingsPage: View {
                  : "key 只存在这台手机的钥匙串里，开始通话时加密发给 Mac，Mac 用完即丢、不落盘。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: 费用
+
+    private var costSection: some View {
+        V2Section(symbol: "yensign.circle", title: "费用", caption: "Mac 统计，连上时更新") {
+            if let stats = controller.stats {
+                HStack(alignment: .top, spacing: 12) {
+                    costCell("今天", stats.today)
+                    costCell("7 天", stats.week)
+                    costCell("30 天", stats.month)
+                }
+                if !stats.byProvider.isEmpty {
+                    Divider()
+                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+                        ForEach(stats.byProvider.sorted { ($0.value.usd, $1.key) > ($1.value.usd, $0.key) }, id: \.key) { name, b in
+                            GridRow {
+                                Text(Self.providerName(name)).font(.callout.weight(.medium))
+                                Text(yuan(b.usd)).font(.callout.monospacedDigit()).gridColumnAlignment(.trailing)
+                                Text("\(b.calls) 通").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                                    .gridColumnAlignment(.trailing)
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                }
+            } else {
+                Text("还没有数据，连上 Mac 后更新").font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func costCell(_ label: String, _ b: ControlMessage.Stats.Bucket) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.footnote).foregroundStyle(.secondary)
+            Text(yuan(b.usd)).font(.title2.weight(.medium).monospacedDigit())
+            Text("\(b.calls) 通 · \(Int((b.seconds / 60).rounded())) 分钟").font(.caption).foregroundStyle(.secondary)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private static func providerName(_ key: String) -> String {
+        switch key {
+        case "qwen": "千问"
+        case "grok": "Grok"
+        default: key
         }
     }
 

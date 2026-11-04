@@ -24,6 +24,10 @@ final class CallController {
     /// Mac's `status.state` during a call: connecting / listening / thinking / speaking.
     private(set) var callState = ""
     private(set) var transcript: [Line] = []
+    /// Mac `cost` of the current call (USD so far, seconds); cleared on call.start, kept after hang-up.
+    private(set) var callCost: (usd: Double, seconds: Double)?
+    /// Mac `stats`, refreshed after every hello.
+    private(set) var stats: ControlMessage.Stats?
 
     /// An image or link the Mac sent; kept in memory only, newest last.
     struct Attachment: Identifiable {
@@ -278,6 +282,7 @@ final class CallController {
         callState = "connecting"
         transcript = []
         attachments = []
+        callCost = nil
         await relay.send(start)
     }
 
@@ -457,6 +462,10 @@ final class CallController {
             asks.removeAll { $0.block == block }
         case let .answerResult(block, ok, msg):
             answerResults[block] = (ok, msg)
+        case let .cost(usd, seconds):
+            callCost = (usd, seconds)
+        case let .stats(s):
+            stats = s
         case .hello, .callStart, .callEnd, .voicePreview, .answer, .prefs, .unknown:
             break
         }
@@ -543,6 +552,21 @@ extension CallController {
                                 options: ["Yes, and switch to BYPASS PERMISSIONS", "Yes, manually approve edits", "Tell Claude what to change"]))
             }
             if n == "failed" { asks[0].phase = .failed("没有这个窗格") }
+        }
+        // `REXVOICE_COST=<usd>` feeds one `cost`; `REXVOICE_STATS=1|zero` one `stats` (unset: no stats).
+        if let usd = ProcessInfo.processInfo.environment["REXVOICE_COST"].flatMap(Double.init) {
+            onControl(.cost(usd: usd, seconds: 83.6))
+        }
+        switch ProcessInfo.processInfo.environment["REXVOICE_STATS"] {
+        case "1":
+            onControl(.stats(.init(today: .init(calls: 2, seconds: 310.5, usd: 0.41), week: .init(calls: 9, seconds: 2710, usd: 3.86),
+                                   month: .init(calls: 37, seconds: 11_420, usd: 15.27),
+                                   byProvider: ["qwen": .init(calls: 30, seconds: 9_800, usd: 11.02),
+                                                "grok": .init(calls: 7, seconds: 1_620, usd: 4.25)])))
+        case "zero":
+            let z = ControlMessage.Stats.Bucket(calls: 0, seconds: 0, usd: 0)
+            onControl(.stats(.init(today: z, week: z, month: z, byProvider: [:])))
+        default: break
         }
         // `REXVOICE_PREVIEW_STATE=connecting|playing|failed` freezes the voice-sample button; `incall` greys it.
         switch ProcessInfo.processInfo.environment["REXVOICE_PREVIEW_STATE"] {
@@ -647,6 +671,13 @@ extension CallController {
         check(inCall, "status ended outside a reconnect waits for hang_up")
         endCall(notice: nil)
         notice = nil
+
+        // cost / stats: stored as they come; call.start clears cost (toggleCall), hang-up keeps it.
+        handle(.control(.cost(usd: 0.05, seconds: 12)))
+        check(callCost?.usd == 0.05 && callCost?.seconds == 12, "cost stored")
+        let b = ControlMessage.Stats.Bucket(calls: 1, seconds: 12, usd: 0.05)
+        handle(.control(.stats(.init(today: b, week: b, month: b, byProvider: ["qwen": b]))))
+        check(stats?.byProvider["qwen"] == b, "stats stored")
 
         // Image: three chunks out of order -> one attachment.
         let jpeg = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 100)).jpegData(withCompressionQuality: 0.8) {

@@ -120,3 +120,6 @@ func elapsed(since start: Date?, now: Date) -> String {
     let s = max(0, Int(now.timeIntervalSince(start)))
     return String(format: "%02d:%02d", s / 60, s % 60)
 }
+
+/// Mac costs come in USD; shown in CNY at the Mac's fixed `cnyPerUSD`.
+func yuan(_ usd: Double) -> String { String(format: "¥%.2f", usd * 7.2) }
